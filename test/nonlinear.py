@@ -3,7 +3,7 @@ import pdb, os, sys
 import matplotlib.pyplot as plt, numpy as np, torch
 from tqdm import tqdm
 
-import header
+import include_implicit
 
 from implicit.utils import t, diag, topts, fn_with_sol_cache
 import implicit.plot_utils as pu

@@ -5,12 +5,11 @@ import matplotlib.pyplot as plt, numpy as np, torch
 from tqdm import tqdm
 from sklearn.cluster import k_means
 
-sys.path.append(os.path.abspath(os.path.join(os.dirname(__file__), "..")))
+import header
 
-from utils import t, diag, topts, fn_with_sol_cache
-from opt import minimize_sqp, minimize_agd, minimize_lbfgs
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from implicit.utils import t, diag, topts, fn_with_sol_cache
+from implicit.opt import minimize_sqp, minimize_agd, minimize_lbfgs
+import implicit.utils as utl
 
 from implicit import implicit_grads_1st, implicit_grads_2nd
 from implicit import generate_fns
@@ -19,7 +18,6 @@ import mnist
 from objs import LS, OPT_with_centers, CE, OPT_with_diag, OPT_conv
 
 torch.set_default_dtype(torch.float64)
-
 
 def acc_fn(Yp, Y):
     return torch.mean(1e2 * (torch.argmax(Yp, -1) == torch.argmax(Y, -1)))
@@ -59,7 +57,7 @@ def get_centers(X, Y, n=1):
         mask = torch.argmax(Y, dim=-1) == y
         centers[i] = k_means(X[mask, :], n_clusters=n)[0]
     centers = np.concatenate(centers, -2)
-    #with gzip.open(fname, "wb") as fp:
+    # with gzip.open(fname, "wb") as fp:
     #    pickle.dump(centers, fp)
     return torch.as_tensor(centers, **topts(X))
 
@@ -115,7 +113,6 @@ def main(config):
         OPT = OPT_conv(OPT, stride=config["conv_size"])
     else:
         raise ValueError
-
 
     W = OPT.solve(Ztr, Ytr, param)
     Yp_tr = OPT.pred(W, Ztr, param)
@@ -215,9 +212,9 @@ def main(config):
 
 if __name__ == "__main__":
     fmaps = ["vanilla", "conv", "diag", "centers"]
-    #fmaps = ["centers"]
+    # fmaps = ["centers"]
     opt_lows = ["ls", "ce"]
-    #opt_lows = ["ce"]
+    # opt_lows = ["ce"]
 
     params = [(fmap, opt_low) for fmap in fmaps for opt_low in opt_lows]
 

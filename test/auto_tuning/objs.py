@@ -2,11 +2,9 @@ import pdb, os, sys, time, gzip, pickle, math
 
 import torch, numpy as np
 
-sys.path.append(os.path.abspath(os.path.join(os.dirname(__file__), "..")))
-
-from utils import t, topts, is_equal, to_tuple
-from opt import minimize_lbfgs, minimize_sqp
-
+import header
+from implicit.utils import t, topts, is_equal, to_tuple
+from implicit.opt import minimize_lbfgs, minimize_sqp
 
 def Z2Za(Z, sig, d=None):
     d = Z.shape[-1] // 2 if d is None else d
