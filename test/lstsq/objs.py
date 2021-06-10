@@ -2,11 +2,10 @@ import pdb, os, sys, time, gzip, pickle, math
 
 import torch, numpy as np
 
-sys.path.append(os.path.expanduser("~/Dropbox/lib/python"))
+sys.path.append(os.path.abspath(os.path.join(os.dirname(__file__), "..")))
 
-from torch_tools.utils import t, topts, is_equal, to_tuple
-from torch_tools.diff import torch_grad as grad, torch_hessian as hessian
-from torch_tools.opt import minimize_lbfgs, minimize_sqp
+from utils import t, topts, is_equal, to_tuple
+from opt import minimize_lbfgs, minimize_sqp
 
 
 def Z2Za(Z, sig, d=None):

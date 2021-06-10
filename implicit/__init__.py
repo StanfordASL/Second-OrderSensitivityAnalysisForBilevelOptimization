@@ -4,18 +4,12 @@ from operator import mul
 
 import matplotlib.pyplot as plt, torch
 
-from utils import t, topts, ss, fn_with_sol_cache
-from diff import torch_grad as grad, torch_hessian as hessian
-from diff import torch_fwd_grad as fwd_grad
+from .utils import t, topts, ss, fn_with_sol_cache
+from .diff import JACOBIAN, HESSIAN, HESSIAN_DIAG
 
-torch.set_default_dtype(torch.float64)
 prod = lambda zs: reduce(mul, zs)
 
 CHECK_GRADS = False
-
-JACOBIAN = torch.autograd.functional.jacobian
-HESSIAN = torch.autograd.functional.hessian
-
 
 def implicit_grads_1st(
     k_fn, z, *params, Dg=None, Dzk=None, Dzk_solve_fn=None, full_output=False
@@ -25,7 +19,7 @@ def implicit_grads_1st(
     if Dg is not None:
         if Dzk_solve_fn is None:
             if Dzk is None:
-                Dzk = grad(k_fn, argnums=0)(z, *params)
+                Dzk = JACOBIAN(lambda z: k_fn(z, *params), z)
             Dzk = Dzk.reshape((zlen, zlen))
             FT = torch.lu(t(Dzk))
             cache["FT"] = FT
@@ -38,7 +32,6 @@ def implicit_grads_1st(
         )
         Dp = JACOBIAN(fn, *params)
         Dp = [Dp] if len(params) == 1 else Dp
-        # Dp = grad(fn, argnums=range(len(params)))(*params)
         Dp_shaped = [Dp.reshape(param.shape) for (Dp, param) in zip(Dp, params)]
         ret = Dp_shaped[0] if len(params) == 1 else Dp_shaped
 
@@ -77,7 +70,7 @@ def implicit_grads_1st(
         Dpk = [Dpk.reshape((zlen, plen)) for (Dpk, plen) in zip(Dpk, plen)]
         if Dzk_solve_fn is None:
             if Dzk is None:
-                Dzk = grad(k_fn, argnums=0)(z, *params)
+                Dzk = JACOBIAN(lambda z: k_fn(z, *params), z)
             F = torch.lu(Dzk.reshape((zlen, zlen)))
             Dpz = [-torch.lu_solve(Dpk, *F) for Dpk in Dpk]
         else:
@@ -123,7 +116,7 @@ def implicit_grads_2nd(
 
         Dg_ = Dg.reshape((zlen, 1))
         Hg_ = Hg.reshape((zlen, zlen)) if Hg is not None else Hg
-        #H1 = [t(Dpz) @ Hg_ @ Dpz for Dpz in Dpz]
+        # H1 = [t(Dpz) @ Hg_ @ Dpz for Dpz in Dpz]
 
         # compute the left hand vector in the VJP
         if Dzk_solve_fn is None:
@@ -142,9 +135,7 @@ def implicit_grads_2nd(
         #    hessian(fn, argnums=i)(z, *params).reshape((plen, plen))
         #    for (i, plen) in zip(range(1, len(params) + 1), plen)
         # ]
-        Dpp1 = HESSIAN(
-            lambda *params: fn(z, *params), *params, create_graph=True
-        )
+        Dpp1 = HESSIAN(lambda *params: fn(z, *params), *params)
         Dpp1 = [[Dpp1]] if len(params) == 1 else Dpp1
         Dpp1 = [
             Dpp1[i].reshape((plen, plen))
@@ -185,12 +176,12 @@ def implicit_grads_2nd(
             Dpp4 = [t(Dpz) @ (Hg_ + Dzz) @ Dpz for Dpz in Dpz]
         else:
             Dpp4 = [t(Dpz) @ Dzz @ Dpz for Dpz in Dpz]
-        #print("Time 1: %9.4e" % (time.time() - t_))
+        # print("Time 1: %9.4e" % (time.time() - t_))
 
         # version 2 ###########
-        #pdb.set_trace()
-        #t_ = time.time()
-        #Dpp4_ = [
+        # pdb.set_trace()
+        # t_ = time.time()
+        # Dpp4_ = [
         #    JACOBIAN(
         #        lambda z: JACOBIAN(
         #            lambda z: fn(z, *params), z, create_graph=True
@@ -200,19 +191,19 @@ def implicit_grads_2nd(
         #    ).reshape((plen, zlen))
         #    @ Dpz
         #    for (Dpz, plen) in zip(Dpz, plen)
-        #]
-        #print("Time 2: %9.4e" % (time.time() - t_))
+        # ]
+        # print("Time 2: %9.4e" % (time.time() - t_))
 
         ## comparison ##########
         # assert all(
         #    torch.norm(Dpp4_ - Dpp4) < 1e-5
         #    for (Dpp4, Dpp4_) in zip(Dpp4, Dpp4_)
         # )
-        #Dpp4 = Dpp4_
+        # Dpp4 = Dpp4_
         #############################################################
 
         Dpp = [sum(Dpp) for Dpp in zip(Dpp1, Dpp2, Dpp3, Dpp4)]
-        #if Hg is not None:
+        # if Hg is not None:
         #    Dpp = [Dpp + t(Dpz) @ Hg_ @ Dpz for (Dpp, Dpz) in zip(Dpp, Dpz)]
         Dp = [Dg_.reshape((1, zlen)) @ Dpz for Dpz in Dpz]
 
@@ -258,20 +249,24 @@ def implicit_grads_2nd(
     else:
         # compute derivatives
         if Dzzk is None:
-            Hk = [
-                hessian(k_fn, argnums=i)(z, *params)
-                for i in range(len(params) + 1)
-            ]
+            # Hk = [
+            #    hessian(k_fn, argnums=i)(z, *params)
+            #    for i in range(len(params) + 1)
+            # ]
+            Hk = HESSIAN_DIAG(k_fn, z, *params)
             Dzzk, Dppk = Hk[0], Hk[1:]
         else:
-            Dppk = [
-                hessian(k_fn, argnums=i)(z, *params)
-                for i in range(1, len(params) + 1)
-            ]
-        Dpzk = grad(
-            grad(k_fn, argnums=0, create_graph=True),
-            argnums=range(1, len(params) + 1),
-        )(z, *params)
+            # Dppk = [
+            #    hessian(k_fn, argnums=i)(z, *params)
+            #    for i in range(1, len(params) + 1)
+            # ]
+            Dppk = HESSIAN_DIAG(lambda *params: k_fn(z, *params), *params)
+        Dpzk = JACOBIAN(
+            lambda *params: JACOBIAN(
+                lambda z: k_fn(z, *params), z, create_graph=True
+            ),
+            params,
+        )
         Dppk = [
             Dppk.reshape((zlen, plen, plen)) for (Dppk, plen) in zip(Dppk, plen)
         ]
@@ -335,7 +330,7 @@ def generate_fns(
     def g_fn(z, *params):
         z = z.detach() if isinstance(z, torch.Tensor) else z
         params = detach_args(*params)
-        g = grad(loss_fn, argnums=range(len(params) + 1))(z, *params)
+        g = JACOBIAN(loss_fn, (z, *params))
         Dp = implicit_grads_1st(
             k_fn, z, *params, Dg=g[0], Dzk_solve_fn=Dzk_solve_fn
         )
@@ -350,14 +345,14 @@ def generate_fns(
     def h_fn(z, *params):
         z = z.detach() if isinstance(z, torch.Tensor) else z
         params = detach_args(*params)
-        g = grad(loss_fn, argnums=range(len(params) + 1))(z, *params)
+        g = JACOBIAN(loss_fn, (z, *params))
         # H = [
         #    hessian(loss_fn, argnums=i)(z, *params)
         #    for i in range(len(params) + 1)
         # ]
         params_ = (z, *params)
         H = [
-            torch.autograd.functional.hessian(
+            HESSIAN(
                 lambda arg: loss_fn(*params_[:i], arg, *params_[i + 1 :]), arg
             )
             for (i, arg) in enumerate(params_)

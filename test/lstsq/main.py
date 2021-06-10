@@ -5,13 +5,10 @@ import matplotlib.pyplot as plt, numpy as np, torch
 from tqdm import tqdm
 from sklearn.cluster import k_means
 
-sys.path.append(os.path.expanduser("~/Dropbox/lib/python"))
+sys.path.append(os.path.abspath(os.path.join(os.dirname(__file__), "..")))
 
-from torch_tools.diff import torch_grad as grad, torch_hessian as hessian
-from torch_tools.utils import t, diag, topts, fn_with_sol_cache
-from torch_tools.opt import minimize_sqp, minimize_agd, minimize_lbfgs
-from torch_tools import utils as utl
-from ipopt_tools.opt import minimize_ipopt
+from utils import t, diag, topts, fn_with_sol_cache
+from opt import minimize_sqp, minimize_agd, minimize_lbfgs
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
