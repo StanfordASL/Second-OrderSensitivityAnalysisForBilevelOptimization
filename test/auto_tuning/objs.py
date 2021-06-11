@@ -13,6 +13,13 @@ def Z2Za(Z, sig, d=None):
         [Z[:, :-d], torch.softmax(-dist / (10.0 ** sig), dim=1)], -1
     )
 
+def poly_feat(X, n=1, centers=None):
+    Z = torch.cat([X[..., 0:1] ** 0] + [X ** i for i in range(1, n + 1)], -1)
+    if centers is not None:
+        t_ = time.time()
+        dist = torch.norm(X[..., None, :] - centers, dim=-1) / X.shape[-1]
+        Z = torch.cat([Z, dist], -1)
+    return Z
 
 class LS:
     def pred(self, W, Z, lam=None):
@@ -235,7 +242,6 @@ class OPT_with_diag:
             rhs_ = rhs.reshape((F.shape[-1], -1))
             return torch.cholesky_solve(rhs_, F).reshape(rhs.shape)
 
-
 class OPT_conv:
     def __init__(self, OPT, in_channels=1, out_channels=1, stride=2):
         self.OPT = OPT
@@ -256,6 +262,58 @@ class OPT_conv:
         Za = torch.nn.functional.conv2d(Za, C, stride=self.stride)
         Za = Za.reshape((-1, Za[0, ...].numel()))
         return torch.cat([Za + C0, Za[..., 0:1] ** 0], -1)
+
+    def pred(self, W, Z, param):
+        lam, C0, C = self.get_params(param)
+        Za = self.conv(Z, C0, C)
+        return self.OPT.pred(W, Za, lam)
+
+    def solve(self, Z, Y, param):
+        lam, C0, C = self.get_params(param)
+        Za = self.conv(Z, C0, C)
+        return self.OPT.solve(Za, Y, lam)
+
+    def fval(self, W, Z, Y, param):
+        lam, C0, C = self.get_params(param)
+        Za = self.conv(Z, C0, C)
+        return self.OPT.fval(W, Za, Y, lam)
+
+    def grad(self, W, Z, Y, param):
+        lam, C0, C = self.get_params(param)
+        Za = self.conv(Z, C0, C)
+        return self.OPT.grad(W, Za, Y, lam)
+
+    def hess(self, W, Z, Y, param):
+        lam, C0, C = self.get_params(param)
+        Za = self.conv(Z, C0, C)
+        return self.OPT.hess(W, Za, Y, lam)
+
+    def Dzk_solve(self, W, Z, Y, param, rhs, T=False):
+        lam, C0, C = self.get_params(param)
+        Za = self.conv(Z, C0, C)
+        return self.OPT.Dzk_solve(W, Za, Y, lam, rhs, T=T)
+
+class OPT_conv_poly:
+    def __init__(self, OPT, in_channels=1, out_channels=1, stride=2, d=2):
+        self.OPT = OPT
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.stride = stride
+        self.d = d
+
+    def get_params(self, params):
+        params = params.reshape(-1)
+        lam, C0, C = params[0], params[1], params[2:]
+        n = round(math.sqrt(C.numel() / self.in_channels / self.out_channels))
+        lam = torch.clamp(lam, -4, 1)
+        return lam, C0, C.reshape((self.out_channels, self.in_channels, n, n))
+
+    def conv(self, Z, C0, C):
+        n = round(math.sqrt(Z.shape[-1] / self.in_channels))
+        Za = Z.reshape((-1, self.in_channels, n, n))
+        Za = torch.nn.functional.conv2d(Za, C, stride=self.stride)
+        Za = Za.reshape((-1, Za[0, ...].numel())) + C0
+        return poly_feat(Za, self.d)
 
     def pred(self, W, Z, param):
         lam, C0, C = self.get_params(param)

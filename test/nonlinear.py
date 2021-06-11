@@ -74,6 +74,7 @@ if __name__ == "__main__":
 
     assert torch.norm(Dpz - ret[0]) / torch.norm(Dpz) < 1e-9
     assert torch.norm(Dppz - ret[1]) / torch.norm(Dppz) < 1e-9
+    print("Norm verification passed")
 
     pu.plot_3d(Dppz.reshape((th.numel(),) + (lam.numel(),) * 2))
     plt.draw_all()

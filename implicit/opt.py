@@ -20,6 +20,7 @@ def minimize_agd(
     ai=1e-1,
     af=1e-2,
     batched=False,
+    full_output=False,
     **kwargs
 ):
     assert len(args) > 0
@@ -38,6 +39,7 @@ def minimize_agd(
         ["%05d", "%9.4e", "%9.4e", "%9.4e"],
         prefix=verbose_prefix,
     )
+    args_hist = [[arg.detach().clone() for arg in args]]
     if verbose:
         print(tp.make_header())
     while it < max_it:
@@ -59,6 +61,7 @@ def minimize_agd(
             torch.norm(arg.grad) for arg in args if arg.grad is not None
         ) / len(args)
         opt.step()
+        args_hist.append([arg.detach().clone() for arg in args])
         if batched:
             imprv = sum(
                 torch.mean(
@@ -81,7 +84,12 @@ def minimize_agd(
     if verbose:
         print(tp.make_footer())
     ret = [arg.detach() for arg in args]
-    return ret if len(ret) > 1 else ret[0]
+    ret = ret if len(args) > 1 else ret[0]
+    args_hist = [z if len(args) > 1 else z[0] for z in args_hist]
+    if full_output:
+        return ret, args_hist
+    else:
+        return ret
 
 
 ##$#############################################################################
@@ -95,6 +103,7 @@ def minimize_lbfgs(
     lr=1e0,
     max_it=100,
     batched=False,
+    full_output=False,
     **kwargs
 ):
     assert len(args) > 0
@@ -107,7 +116,7 @@ def minimize_lbfgs(
     imprv = float("inf")
     it = 0
     opt = torch.optim.LBFGS(args, lr=lr)
-
+    args_hist = [[arg.detach().clone() for arg in args]]
     def closure():
         opt.zero_grad()
         if g_fn is None:
@@ -134,6 +143,7 @@ def minimize_lbfgs(
     while it < max_it:
         args_prev = [arg.detach().clone() for arg in args]
         l = opt.step(closure)
+        args_hist.append([arg.detach().clone() for arg in args])
         if batched:
             imprv = sum(
                 torch.mean(
@@ -160,7 +170,12 @@ def minimize_lbfgs(
     if verbose:
         print(tp.make_footer())
     ret = [arg.detach() for arg in args]
-    return ret if len(ret) > 1 else ret[0]
+    ret = ret if len(args) > 1 else ret[0]
+    args_hist = [z if len(args) > 1 else z[0] for z in args_hist]
+    if full_output:
+        return ret, args_hist
+    else:
+        return ret
 
 
 ##$#############################################################################
@@ -232,6 +247,7 @@ def minimize_sqp(
     max_it=100,
     ls_pts_nb=5,
     batched=False,
+    full_output=False,
     **kwargs
 ):
     if len(args) > 1:
@@ -244,7 +260,7 @@ def minimize_sqp(
         M, x_size = 1, x.numel()
     it, imprv = 0, float("inf")
     x_best, f_best = x, torch.atleast_1d(f_fn(x))
-    f_hist = [f_best]
+    f_hist, x_hist = [f_best], [x.detach().clone()]
     t__ = utl.time()
     tp = utl.TablePrinter(
         ["it", "imprv", "loss", "reg_it", "bet", "||g_prev||_2"],
@@ -273,6 +289,7 @@ def minimize_sqp(
         )
 
         x = x + torch.reshape(bet, (M,) + (1,) * len(x_shape[1:])) * d
+        x_hist.append(x.clone().detach())
         imprv = torch.mean(bet * data["d_norm"]).detach()
         if batched:
             x_bests = [None for _ in range(M)]
@@ -305,8 +322,10 @@ def minimize_sqp(
         it += 1
     if verbose:
         print(tp.make_footer())
-    return x_best
-    # return x
+    if full_output:
+        return x_best, x_hist + [x_best.detach().clone()]
+    else:
+        return x_best
 
 
 ###$#############################################################################

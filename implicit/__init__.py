@@ -11,6 +11,7 @@ prod = lambda zs: reduce(mul, zs)
 
 CHECK_GRADS = False
 
+
 def implicit_grads_1st(
     k_fn, z, *params, Dg=None, Dzk=None, Dzk_solve_fn=None, full_output=False
 ):
@@ -57,14 +58,6 @@ def implicit_grads_1st(
                 print("Gradient 1st order check failed")
                 pdb.set_trace()
     else:
-        # t_ = time.time()
-        # Dpk_ = fwd_grad(k_fn, argnums=range(1, len(params) + 1))(z, *params)
-        # print("Dpk_ took %9.4e" % (time.time() - t_))
-        # t_ = time.time()
-        # Dpk = grad(k_fn, argnums=range(1, len(params) + 1))(z, *params)
-        # print("Dpk took %9.4e" % (time.time() - t_))
-        # pdb.set_trace()
-        # Dpk = fwd_grad(k_fn, argnums=range(1, len(params) + 1))(z, *params)
         Dpk = JACOBIAN(lambda *params: k_fn(z, *params), *params)
         Dpk = [Dpk] if len(params) == 1 else Dpk
         Dpk = [Dpk.reshape((zlen, plen)) for (Dpk, plen) in zip(Dpk, plen)]
@@ -96,9 +89,6 @@ def implicit_grads_2nd(
         k_fn: the implicit function k(z, *params) = 0, dk_dz(z, *params) != 0
         z: variable which we differentiate
         *params: variables wrt which we differentiate
-    Keyword args:
-        only_1st: whether to only compute the 1st order implicit gradients
-
     """
     zlen, plen = prod(z.shape), [prod(param.shape) for param in params]
 
@@ -116,7 +106,6 @@ def implicit_grads_2nd(
 
         Dg_ = Dg.reshape((zlen, 1))
         Hg_ = Hg.reshape((zlen, zlen)) if Hg is not None else Hg
-        # H1 = [t(Dpz) @ Hg_ @ Dpz for Dpz in Dpz]
 
         # compute the left hand vector in the VJP
         if Dzk_solve_fn is None:
@@ -131,28 +120,12 @@ def implicit_grads_2nd(
         )
 
         # compute the 2nd order derivatives consisting of 4 terms
-        # Dpp1 = [
-        #    hessian(fn, argnums=i)(z, *params).reshape((plen, plen))
-        #    for (i, plen) in zip(range(1, len(params) + 1), plen)
-        # ]
         Dpp1 = HESSIAN(lambda *params: fn(z, *params), *params)
         Dpp1 = [[Dpp1]] if len(params) == 1 else Dpp1
         Dpp1 = [
             Dpp1[i].reshape((plen, plen))
             for (Dpp1, i, plen) in zip(Dpp1, range(len(params)), plen)
         ]
-        # temp = grad(
-        #    grad(fn, argnums=0, create_graph=True),
-        #    argnums=range(1, len(params) + 1),
-        # )(z, *params)
-        # temp = [
-        #    t(
-        #        grad(grad(fn, argnums=i, create_graph=True), argnums=0)(
-        #            z, *params
-        #        )
-        #    )
-        #    for i in range(1, len(params) + 1)
-        # ]
         temp = JACOBIAN(
             lambda z: JACOBIAN(
                 lambda *params: fn(z, *params), *params, create_graph=True
@@ -166,45 +139,13 @@ def implicit_grads_2nd(
             for (temp, Dpz, plen) in zip(temp, Dpz, plen)
         ]
         Dpp3 = [t(Dpp2) for Dpp2 in Dpp2]
-
-        #############################################################
-        # version 1 ###########
-        t_ = time.time()
-        # Dzz = hessian(fn, argnums=0)(z, *params).reshape((zlen, zlen))
         Dzz = HESSIAN(lambda z: fn(z, *params), z).reshape((zlen, zlen))
         if Hg is not None:
             Dpp4 = [t(Dpz) @ (Hg_ + Dzz) @ Dpz for Dpz in Dpz]
         else:
             Dpp4 = [t(Dpz) @ Dzz @ Dpz for Dpz in Dpz]
-        # print("Time 1: %9.4e" % (time.time() - t_))
-
-        # version 2 ###########
-        # pdb.set_trace()
-        # t_ = time.time()
-        # Dpp4_ = [
-        #    JACOBIAN(
-        #        lambda z: JACOBIAN(
-        #            lambda z: fn(z, *params), z, create_graph=True
-        #        ).reshape(zlen)
-        #        @ Dpz,
-        #        z,
-        #    ).reshape((plen, zlen))
-        #    @ Dpz
-        #    for (Dpz, plen) in zip(Dpz, plen)
-        # ]
-        # print("Time 2: %9.4e" % (time.time() - t_))
-
-        ## comparison ##########
-        # assert all(
-        #    torch.norm(Dpp4_ - Dpp4) < 1e-5
-        #    for (Dpp4, Dpp4_) in zip(Dpp4, Dpp4_)
-        # )
-        # Dpp4 = Dpp4_
-        #############################################################
 
         Dpp = [sum(Dpp) for Dpp in zip(Dpp1, Dpp2, Dpp3, Dpp4)]
-        # if Hg is not None:
-        #    Dpp = [Dpp + t(Dpz) @ Hg_ @ Dpz for (Dpp, Dpz) in zip(Dpp, Dpz)]
         Dp = [Dg_.reshape((1, zlen)) @ Dpz for Dpz in Dpz]
 
         # return the results
@@ -249,17 +190,10 @@ def implicit_grads_2nd(
     else:
         # compute derivatives
         if Dzzk is None:
-            # Hk = [
-            #    hessian(k_fn, argnums=i)(z, *params)
-            #    for i in range(len(params) + 1)
-            # ]
             Hk = HESSIAN_DIAG(k_fn, z, *params)
+            print("Done initial diff")
             Dzzk, Dppk = Hk[0], Hk[1:]
         else:
-            # Dppk = [
-            #    hessian(k_fn, argnums=i)(z, *params)
-            #    for i in range(1, len(params) + 1)
-            # ]
             Dppk = HESSIAN_DIAG(lambda *params: k_fn(z, *params), *params)
         Dpzk = JACOBIAN(
             lambda *params: JACOBIAN(
@@ -267,6 +201,7 @@ def implicit_grads_2nd(
             ),
             params,
         )
+        print("Done jacobian diff")
         Dppk = [
             Dppk.reshape((zlen, plen, plen)) for (Dppk, plen) in zip(Dppk, plen)
         ]
@@ -346,10 +281,6 @@ def generate_fns(
         z = z.detach() if isinstance(z, torch.Tensor) else z
         params = detach_args(*params)
         g = JACOBIAN(loss_fn, (z, *params))
-        # H = [
-        #    hessian(loss_fn, argnums=i)(z, *params)
-        #    for i in range(len(params) + 1)
-        # ]
         params_ = (z, *params)
         H = [
             HESSIAN(
@@ -357,8 +288,6 @@ def generate_fns(
             )
             for (i, arg) in enumerate(params_)
         ]
-        # H = torch.autograd.functional.hessian(loss_fn, (z, *params))
-        # H = [H[i][i] for i in range(len(H))]
         Dp, Dpp = implicit_grads_2nd(
             k_fn, z, *params, Dg=g[0], Hg=H[0], Dzk_solve_fn=Dzk_solve_fn
         )
