@@ -15,9 +15,9 @@ def k_fn(x, A, b):
 
 def F_fn(A, b):
     H = t(A) @ A + EPS * torch.eye(A.shape[-1], **topts(A))
-    return torch.cholesky_solve((t(A) @ b)[..., None], torch.cholesky(H))[
-        ..., 0
-    ]
+    return torch.cholesky_solve(
+        (t(A) @ b)[..., None], torch.linalg.cholesky(H)
+    )[..., 0]
 
 
 if __name__ == "__main__":
@@ -61,9 +61,9 @@ if __name__ == "__main__":
     # form the 2nd order implicit gradient implicit eqution terms first & second
     first = (
         Dppk_
-        + Dzpk_ @ Dpz_[None, ...] # first dim is batched
-        + t(Dpz_)[None, ...] @ t(Dzpk_) # first dim is batched
-        + (t(Dpz_)[None, ...] @ Dzzk_) @ Dpz_[None, ...] # first dim is batched
+        + Dzpk_ @ Dpz_[None, ...]  # first dim is batched
+        + t(Dpz_)[None, ...] @ t(Dzpk_)  # first dim is batched
+        + (t(Dpz_)[None, ...] @ Dzzk_) @ Dpz_[None, ...]  # first dim is batched
     )
     second = (Dzk_ @ Dppz.reshape((shz, -1))).reshape((shz, shp, shp))
     assert torch.norm(first + second) < 1e-5

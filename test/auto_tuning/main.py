@@ -239,12 +239,12 @@ if __name__ == "__main__":
     for (fmap, opt_low) in params:
         config = dict(
             seed=0,
-            train_n=10 ** 3,
+            train_n=10 ** 4,
             test_n=10 ** 3,
             opt_low=opt_low,
             conv_size=2,
             solver="sqp",
-            max_it=3,
+            max_it=10,
             fmap=fmap,
         )
         print("#" * 80)

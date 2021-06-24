@@ -19,7 +19,7 @@ def visualize_landscape(loss_fn, x_hist, N=30):
 
     U = torch.svd(X.T)[0][:, :2]  # find the first 2 dimensions
     Xt = (U.T @ X.T).T  # project onto the first 2 dimensions
-    scale = 3e1 * torch.mean(torch.std(Xt, -2))
+    scale = 15.0 * torch.mean(torch.std(Xt, -2))
     Xp, Yp = torch.meshgrid(
         *((torch.linspace(-scale / 2, scale / 2, N, **topts(X)),) * 2)
     )
@@ -27,15 +27,24 @@ def visualize_landscape(loss_fn, x_hist, N=30):
     ls = []
     for i in tqdm(range(pts.shape[0])):
         pt = pts[i, :]
-        ls.append(loss_fn((U @ (pt + Xt[-1, :]) + X_mean[None, :]).reshape(param_shape)))
-    l_optimal = loss_fn(x_hist[-1])
+        ls.append(
+            loss_fn(
+                (U @ (pt + Xt[-1, :]) + X_mean[None, :]).reshape(param_shape)
+            )
+        )
     Zp = torch.stack(ls).reshape(Xp.shape)
+    l_optimal = min(loss_fn(x_hist[-1]), torch.min(Zp))
     Zp = torch.log10(Zp - l_optimal + 1e-7)
 
     Xp, Yp, Zp = [z.detach().numpy() for z in [Xp, Yp, Zp]]
 
     fig = plt.figure()
     ax = plt.axes(projection="3d")
+    Xt_loss = torch.stack([loss_fn((U @ pt + X_mean[None,
+        :]).reshape(param_shape)) for pt in Xt])
+    Xt_loss = torch.log10(Xt_loss - l_optimal + 1e-7)
+    ax.plot(Xt[:, 0], Xt[:, 1], Xt_loss, "ro", alpha=0.5)
+    ax.plot(Xt[:, 0], Xt[:, 1], Xt_loss, "r", alpha=0.5)
     ax.plot_surface(Xp, Yp, Zp)
     fig.tight_layout()
 
@@ -49,8 +58,11 @@ def visualize_landscape(loss_fn, x_hist, N=30):
     plt.scatter(Xt[-1, 0], Xt[-1, 1], color="black")
     plt.tight_layout()
 
-    plt.show()
+    plt.draw_all()
+    plt.pause(1e-1)
+    pdb.set_trace()
     return
+
 
 if __name__ == "__main__":
     import tensorly as tl

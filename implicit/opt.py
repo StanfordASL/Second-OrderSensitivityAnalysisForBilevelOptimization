@@ -210,7 +210,7 @@ def positive_factorization_cholesky(H, reg0):
         try:
             H_reg = torch.clone(H)
             H_reg.diagonal(dim1=-2, dim2=-1)[:] += reg
-            F = torch.cholesky(H_reg)
+            F = torch.linalg.cholesky(H_reg)
             assert not torch.any(torch.isnan(F))
             break
         except Exception as e:

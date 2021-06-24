@@ -6,12 +6,14 @@ import header
 from implicit.utils import t, topts, is_equal, to_tuple
 from implicit.opt import minimize_lbfgs, minimize_sqp
 
+
 def Z2Za(Z, sig, d=None):
     d = Z.shape[-1] // 2 if d is None else d
     dist = Z[:, -d:]
     return torch.cat(
         [Z[:, :-d], torch.softmax(-dist / (10.0 ** sig), dim=1)], -1
     )
+
 
 def poly_feat(X, n=1, centers=None):
     Z = torch.cat([X[..., 0:1] ** 0] + [X ** i for i in range(1, n + 1)], -1)
@@ -21,6 +23,7 @@ def poly_feat(X, n=1, centers=None):
         Z = torch.cat([Z, dist], -1)
     return Z
 
+
 class LS:
     def pred(self, W, Z, lam=None):
         return Z @ W
@@ -28,7 +31,7 @@ class LS:
     def solve(self, Z, Y, lam):
         n = Z.shape[-2]
         A = t(Z) @ Z / n + (10.0 ** lam) * torch.eye(Z.shape[-1], **topts(Z))
-        return torch.cholesky_solve(t(Z) @ Y / n, torch.cholesky(A))
+        return torch.cholesky_solve(t(Z) @ Y / n, torch.linalg.cholesky(A))
 
     def grad(self, W, Z, Y, lam):
         n = Z.shape[-2]
@@ -49,12 +52,12 @@ class LS:
             rhs = rhs.reshape((A.shape[-1], l, -1))
             for i in range(l):
                 diag_reg_ = diag_reg[i * A.shape[-1] : (i + 1) * A.shape[-1]]
-                F = torch.cholesky(A + torch.diag(diag_reg_.reshape(-1)))
+                F = torch.linalg.cholesky(A + torch.diag(diag_reg_.reshape(-1)))
                 xs[i] = torch.cholesky_solve(rhs[:, i, ...], F)
             sol = torch.stack(xs, 1)
             return sol.reshape(rhs_shape)
         else:
-            F = torch.cholesky(A)
+            F = torch.linalg.cholesky(A)
             return torch.cholesky_solve(rhs, F).reshape(rhs_shape)
 
 
@@ -74,16 +77,17 @@ class CE:
         Yp = CE._Yp_aug(W, X)
         return torch.softmax(Yp, -1)
 
-    def solve(self, X, Y, lam, method=""):
+    def solve(self, X, Y, lam, method="", verbose=False, max_it=8):
         if method == "cvx":
             import cvxpy as cp
 
             W = cp.Variable((X.shape[-1], Y.shape[-1] - 1))
             Yp = X.detach().numpy() @ W
             Yp_aug = cp.hstack([Yp, np.zeros((Yp.shape[-2], 1))])
-            obj = -cp.sum(
-                cp.multiply(Y[..., :-1].detach().numpy(), Yp)
-            ) + cp.sum(cp.log_sum_exp(Yp_aug, 1))
+            obj = (
+                -cp.sum(cp.multiply(Y[..., :-1].detach().numpy(), Yp))
+                + cp.sum(cp.log_sum_exp(Yp_aug, 1))
+            ) / X.shape[-2] + 0.5 * (10.0 ** lam) * cp.sum_squares(W)
             prob = cp.Problem(cp.Minimize(obj))
             prob.solve(cp.MOSEK)
             assert prob.status in ["optimal", "optimal_inaccurate"]
@@ -97,7 +101,7 @@ class CE:
             Y_ls.scatter_(-1, mask, torch.ones(mask.shape, **topts(Y)))
 
             W = LS().solve(X, Y_ls, lam)[..., :-1]
-            W = minimize_lbfgs(f_fn, g_fn, W, max_it=8, verbose=False, lr=1e-1)
+            W = minimize_lbfgs(f_fn, g_fn, W, max_it=max_it, verbose=verbose, lr=1e-1)
             # W = minimize_sqp(f_fn, g_fn, h_fn, W, max_it=1, verbose=False)
         return W
 
@@ -128,6 +132,8 @@ class CE:
         Ds = -s[..., :-1, None] @ s[..., None, :-1] + torch.diag_embed(
             s[..., :-1], 0
         )
+
+        # t_ = time.time()
         H = (
             torch.einsum(
                 "bijkl,bijkl,bijkl->ijkl",
@@ -137,6 +143,21 @@ class CE:
             )
             / X.shape[-2]
         )
+        # print("CPU time: %9.4e" % (time.time() - t_))
+
+        # t_ = time.time()
+        # Ds, X = Ds.cuda(), X.cuda()
+        # H = (
+        #    torch.einsum(
+        #        "bijkl,bijkl,bijkl->ijkl",
+        #        Ds[..., None, :, None, :],
+        #        X[..., :, None, None, None],
+        #        X[..., None, None, :, None],
+        #    )
+        #    / X.shape[-2]
+        # ).cpu()
+        # print("GPU time: %9.4e" % (time.time() - t_))
+
         H = H + (10.0 ** lam) * torch.eye(W.numel(), **topts(H)).reshape(
             H.shape
         )
@@ -152,7 +173,7 @@ class CE:
             F = self.fact_map[key]
         else:
             H = self.hess(W, X, Y, lam).reshape((W.numel(),) * 2)
-            F = torch.cholesky(H)
+            F = torch.linalg.cholesky(H)
             # self.fact_map[key] = F.detach()
         rhs_ = rhs.reshape((F.shape[-1], -1))
         return torch.cholesky_solve(rhs_, F).reshape(rhs.shape)
@@ -236,11 +257,12 @@ class OPT_with_diag:
             return self.OPT.Dzk_solve(W, Z, Y, lam, rhs, T=T, diag_reg=diag_reg)
         except TypeError:
             H = self.OPT.hess(W, Z, Y, lam).reshape((W.numel(),) * 2)
-            F = torch.cholesky(
+            F = torch.linalg.cholesky(
                 H + torch.diag((10 ** lam_diag).reshape(W.numel()))
             )
             rhs_ = rhs.reshape((F.shape[-1], -1))
             return torch.cholesky_solve(rhs_, F).reshape(rhs.shape)
+
 
 class OPT_conv:
     def __init__(self, OPT, in_channels=1, out_channels=1, stride=2):
@@ -292,6 +314,7 @@ class OPT_conv:
         lam, C0, C = self.get_params(param)
         Za = self.conv(Z, C0, C)
         return self.OPT.Dzk_solve(W, Za, Y, lam, rhs, T=T)
+
 
 class OPT_conv_poly:
     def __init__(self, OPT, in_channels=1, out_channels=1, stride=2, d=2):
