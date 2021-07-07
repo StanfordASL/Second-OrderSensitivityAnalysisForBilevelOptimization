@@ -13,11 +13,13 @@ lam = 1e-3
 p = torch.randn((3, 6))
 W = CE.solve(X @ p, Y, lam)
 
-VERBOSE = False
+VERBOSE = True
 
 # we test here 2nd order implicit gradients
 class DpzTest(unittest.TestCase):
     def test_shape_and_val(self):
+        if VERBOSE:
+            print()
         k_fn = lambda W, p: CE.grad(W, X @ p, Y, lam)
         Dzk_solve_fn = lambda W, p, rhs, T=False: CE.Dzk_solve(
             W, X @ p, Y, lam, rhs, T=T
@@ -30,10 +32,16 @@ class DpzTest(unittest.TestCase):
         self.assertEqual(Dpz2.shape, (W.shape + p.shape))
         self.assertEqual(Dppz2.shape, (W.shape + p.shape + p.shape))
 
+        eps = 1e-5
         err_Dpz = torch.norm(Dpz - Dpz2)
         err_Dppz = torch.norm(Dppz - Dppz2)
-        self.assertTrue(err_Dpz < 1e-5)
-        self.assertTrue(err_Dppz < 1e-5)
+
+        if VERBOSE:
+            print("err_Dpz: %9.4e" % err_Dpz)
+            print("err_Dppz: %9.4e" % err_Dppz)
+
+        self.assertTrue(err_Dpz < eps)
+        self.assertTrue(err_Dppz < eps)
 
     def test_shape_jvp_without_Dzk_solve(self, Dzk_solve_fn=None):
         if VERBOSE:
@@ -68,6 +76,9 @@ class DpzTest(unittest.TestCase):
             Dppz1.reshape((p.numel(), p.numel())) @ jvp_vec.reshape(p.numel())
             - Dppz2.reshape(p.numel())
         )
+        if VERBOSE:
+            print("err_Dpz: %9.4e" % err_Dpz)
+            print("err_Dppz: %9.4e" % err_Dppz)
         self.assertTrue(err_Dpz < eps)
         self.assertTrue(err_Dppz < eps)
 

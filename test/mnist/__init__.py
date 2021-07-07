@@ -2,7 +2,7 @@ import pdb, pickle, os
 from pprint import pprint
 import gzip, shutil
 
-import numpy as np, cv2
+import numpy as np
 
 
 def deskew(image, image_shape=None, negated=False):
@@ -42,6 +42,8 @@ def deskew(image, image_shape=None, negated=False):
     # negate the image
     if not negated:
         image = 255 - image
+
+    import cv2
 
     # calculate the moments of the image
     m = cv2.moments(image)

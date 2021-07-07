@@ -19,7 +19,7 @@ def visualize_landscape(loss_fn, x_hist, N=30):
 
     U = torch.svd(X.T)[0][:, :2]  # find the first 2 dimensions
     Xt = (U.T @ X.T).T  # project onto the first 2 dimensions
-    scale = 15.0 * torch.mean(torch.std(Xt, -2))
+    scale = 30.0 * torch.mean(torch.std(Xt, -2))
     Xp, Yp = torch.meshgrid(
         *((torch.linspace(-scale / 2, scale / 2, N, **topts(X)),) * 2)
     )

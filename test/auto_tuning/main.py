@@ -239,7 +239,7 @@ if __name__ == "__main__":
     for (fmap, opt_low) in params:
         config = dict(
             seed=0,
-            train_n=10 ** 4,
+            train_n=10 ** 3,
             test_n=10 ** 3,
             opt_low=opt_low,
             conv_size=2,
