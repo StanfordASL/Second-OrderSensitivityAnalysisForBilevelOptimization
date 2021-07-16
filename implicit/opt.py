@@ -21,6 +21,8 @@ def minimize_agd(
     af=1e-2,
     batched=False,
     full_output=False,
+    callback_fn=None,
+    use_writer=False,
     **kwargs
 ):
     assert len(args) > 0
@@ -38,6 +40,7 @@ def minimize_agd(
         ["it", "imprv", "loss", "||g||_2"],
         ["%05d", "%9.4e", "%9.4e", "%9.4e"],
         prefix=verbose_prefix,
+        use_writer=use_writer,
     )
     args_hist = [[arg.detach().clone() for arg in args]]
     if verbose:
@@ -62,6 +65,8 @@ def minimize_agd(
         ) / len(args)
         opt.step()
         args_hist.append([arg.detach().clone() for arg in args])
+        if callback_fn is not None:
+            callback_fn(*args)
         if batched:
             imprv = sum(
                 torch.mean(
@@ -104,6 +109,8 @@ def minimize_lbfgs(
     max_it=100,
     batched=False,
     full_output=False,
+    callback_fn=None,
+    use_writer=False,
     **kwargs
 ):
     assert len(args) > 0
@@ -117,6 +124,7 @@ def minimize_lbfgs(
     it = 0
     opt = torch.optim.LBFGS(args, lr=lr)
     args_hist = [[arg.detach().clone() for arg in args]]
+
     def closure():
         opt.zero_grad()
         if g_fn is None:
@@ -137,6 +145,7 @@ def minimize_lbfgs(
         ["it", "imprv", "loss", "||g||_2"],
         ["%05d", "%9.4e", "%9.4e", "%9.4e"],
         prefix=verbose_prefix,
+        use_writer=use_writer,
     )
     if verbose:
         print(tp.make_header())
@@ -144,6 +153,8 @@ def minimize_lbfgs(
         args_prev = [arg.detach().clone() for arg in args]
         l = opt.step(closure)
         args_hist.append([arg.detach().clone() for arg in args])
+        if callback_fn is not None:
+            callback_fn(*args)
         if batched:
             imprv = sum(
                 torch.mean(
@@ -180,9 +191,22 @@ def minimize_lbfgs(
 
 ##$#############################################################################
 ##^# SQP (own) #################################################################
-def linesearch(f, x, d, f_fn, g_fn=None, batched=False, ls_pts_nb=5, **kwargs):
+def linesearch(
+    f,
+    x,
+    d,
+    f_fn,
+    g_fn=None,
+    batched=False,
+    ls_pts_nb=5,
+    force_step=False,
+    **kwargs
+):
     opts = dict(device=x.device, dtype=x.dtype)
-    bets = 10.0 ** torch.linspace(-1, 1, ls_pts_nb, **opts)
+    if ls_pts_nb >= 2:
+        bets = 10.0 ** torch.linspace(-1, 1, ls_pts_nb, **opts)
+    else:
+        bets = torch.tensor([1.0], **opts)
     # bets = torch.linspace(1e-3, 2.0, ls_pts_nb)
     y = torch.stack(
         [torch.atleast_1d(f_fn(x + bet * d, **kwargs)) for bet in bets],
@@ -190,8 +214,9 @@ def linesearch(f, x, d, f_fn, g_fn=None, batched=False, ls_pts_nb=5, **kwargs):
     )
     y = torch.where(torch.isnan(y), torch.tensor(math.inf, **opts), y)
 
-    bets = torch.cat([torch.zeros((1,), **opts), bets], -1)
-    y = torch.cat([torch.atleast_1d(f)[..., None], y], -1)
+    if not force_step:
+        bets = torch.cat([torch.zeros((1,), **opts), bets], -1)
+        y = torch.cat([torch.atleast_1d(f)[..., None], y], -1)
 
     idxs = torch.argmin(y, 1)
     f_best = torch.tensor([y[i, idx] for (i, idx) in enumerate(idxs)], **opts)
@@ -246,8 +271,11 @@ def minimize_sqp(
     verbose_prefix="",
     max_it=100,
     ls_pts_nb=5,
+    force_step=False,
     batched=False,
     full_output=False,
+    callback_fn=None,
+    use_writer=False,
     **kwargs
 ):
     if len(args) > 1:
@@ -266,6 +294,7 @@ def minimize_sqp(
         ["it", "imprv", "loss", "reg_it", "bet", "||g_prev||_2"],
         ["%05d", "%9.4e", "%9.4e", "%02d", "%9.4e", "%9.4e"],
         prefix=verbose_prefix,
+        use_writer=use_writer,
     )
     if verbose:
         print(tp.make_header())
@@ -285,12 +314,21 @@ def minimize_sqp(
         # d = torch.solve(F, -g[..., None])[..., 0].reshape(x_shape)
         f = f_hist[-1]
         bet, data = linesearch(
-            f, x, d, f_fn, g_fn, ls_pts_nb=ls_pts_nb, **kwargs
+            f,
+            x,
+            d,
+            f_fn,
+            g_fn,
+            ls_pts_nb=ls_pts_nb,
+            force_step=force_step,
+            **kwargs
         )
 
         x = x + torch.reshape(bet, (M,) + (1,) * len(x_shape[1:])) * d
         x_hist.append(x.clone().detach())
         imprv = torch.mean(bet * data["d_norm"]).detach()
+        if callback_fn is not None:
+            callback_fn(x)
         if batched:
             x_bests = [None for _ in range(M)]
             f_bests = [None for _ in range(M)]

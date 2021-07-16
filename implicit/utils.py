@@ -3,6 +3,7 @@ import os, pickle, time as time_module, pdb, math
 from pprint import pprint
 
 import torch, numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 
 ##$#############################################################################
@@ -55,7 +56,7 @@ time = time_module.time
 ##$#############################################################################
 ##^# table printing utility class ##############################################
 class TablePrinter:
-    def __init__(self, names, fmts=None, prefix=""):
+    def __init__(self, names, fmts=None, prefix="", use_writer=False):
         self.names = names
         self.fmts = fmts if fmts is not None else ["%9.4e" for _ in names]
         self.widths = [
@@ -63,6 +64,13 @@ class TablePrinter:
             for (fmt, name) in zip(fmts, names)
         ]
         self.prefix = prefix
+        self.writer = None
+        if use_writer:
+            try:
+                self.writer = SummaryWriter(flush_secs=1)
+                self.iteration = 0
+            except NameError:
+                print("SummaryWriter not available, ignoring")
 
     def calc_width(self, fmt):
         f = fmt[-1]
@@ -104,6 +112,12 @@ class TablePrinter:
         for (val, fmt, width) in zip(vals, self.fmts, self.widths):
             s += "|" + self.pad_field(fmt % val, width, lj=False)
         s += "|"
+
+        if self.writer is not None:
+            for (name, val) in zip(self.names, vals):
+                self.writer.add_scalar(name, val, self.iteration)
+            self.iteration += 1
+
         return s
 
     def print_header(self):
@@ -122,7 +136,7 @@ def to_tuple_(arg):
     if isinstance(arg, np.ndarray):
         return arg.tobytes()
     elif isinstance(arg, torch.Tensor):
-        return to_tuple_(arg.detach().numpy())
+        return to_tuple_(arg.cpu().detach().numpy())
     else:
         return to_tuple_(np.array(arg))
 
