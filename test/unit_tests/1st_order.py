@@ -20,7 +20,10 @@ class DpzTest(unittest.TestCase):
         Dzk_solve_fn = lambda W, p, rhs, T=False: CE.Dzk_solve(
             W, X @ p, Y, lam, rhs, T=T
         )
-        Dpz = implicit_grads_1st(k_fn, W, p, Dzk_solve_fn=Dzk_solve_fn)
+        optimizations = {
+            "Dzk_solve_fn": Dzk_solve_fn,
+        }
+        Dpz = implicit_grads_1st(k_fn, W, p, optimizations=optimizations)
         Dpz2 = implicit_grads_1st(k_fn, W, p)
         self.assertEqual(Dpz.shape, (W.shape + p.shape))
         self.assertEqual(Dpz2.shape, (W.shape + p.shape))
@@ -35,9 +38,12 @@ class DpzTest(unittest.TestCase):
             W, X @ p, Y, lam, rhs, T=T
         )
         jvp_vec = torch.randn(p.shape)
-        Dpz1 = implicit_grads_1st(k_fn, W, p, Dzk_solve_fn=Dzk_solve_fn)
+        optimizations = {
+            "Dzk_solve_fn": Dzk_solve_fn,
+        }
+        Dpz1 = implicit_grads_1st(k_fn, W, p, optimizations=optimizations)
         Dpz2 = implicit_grads_1st(
-            k_fn, W, p, Dzk_solve_fn=Dzk_solve_fn, jvp_vec=jvp_vec
+            k_fn, W, p, jvp_vec=jvp_vec, optimizations=optimizations
         )
         self.assertEqual(Dpz2.shape, W.shape)
         eps = 1e-5
@@ -59,6 +65,7 @@ class DpzTest(unittest.TestCase):
             - Dpz2.reshape(-1)
         )
         self.assertTrue(err < eps)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

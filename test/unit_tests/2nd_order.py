@@ -24,7 +24,8 @@ class DpzTest(unittest.TestCase):
         Dzk_solve_fn = lambda W, p, rhs, T=False: CE.Dzk_solve(
             W, X @ p, Y, lam, rhs, T=T
         )
-        Dpz, Dppz = implicit_grads_2nd(k_fn, W, p, Dzk_solve_fn=Dzk_solve_fn)
+        optimizations = dict(Dzk_solve_fn=Dzk_solve_fn)
+        Dpz, Dppz = implicit_grads_2nd(k_fn, W, p, optimizations=optimizations)
         self.assertEqual(Dpz.shape, (W.shape + p.shape))
         self.assertEqual(Dppz.shape, (W.shape + p.shape + p.shape))
 
@@ -52,15 +53,16 @@ class DpzTest(unittest.TestCase):
         v = torch.randn(W.shape)
 
         t_ = time.time()
+        optimizations = dict(Dzk_solve_fn=Dzk_solve_fn)
         Dpz1, Dppz1 = implicit_grads_2nd(
-            k_fn, W, p, Dg=v, Dzk_solve_fn=Dzk_solve_fn
+            k_fn, W, p, Dg=v, optimizations=optimizations
         )
         if VERBOSE:
             print("Elapsed %9.4e" % (time.time() - t_))
 
         t_ = time.time()
         Dpz2, Dppz2 = implicit_grads_2nd(
-            k_fn, W, p, Dg=v, Dzk_solve_fn=Dzk_solve_fn, jvp_vec=jvp_vec
+            k_fn, W, p, Dg=v, jvp_vec=jvp_vec, optimizations=optimizations
         )
         if VERBOSE:
             print("Elapsed %9.4e" % (time.time() - t_))

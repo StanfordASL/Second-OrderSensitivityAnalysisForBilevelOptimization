@@ -1,6 +1,7 @@
 import math, pdb, os, sys, time
 from functools import reduce
 from operator import mul
+from typing import Mapping
 
 import matplotlib.pyplot as plt, torch
 
@@ -8,9 +9,28 @@ from .utils import t, topts, ss, fn_with_sol_cache
 from .diff import JACOBIAN, HESSIAN, HESSIAN_DIAG, fwd_grad, grad
 from .inverse import solve_gmres, solve_cg, solve_cg_torch
 
-prod = lambda zs: reduce(mul, zs)
+prod = lambda zs: reduce(mul, zs) if zs != () else 1
 
 CHECK_GRADS = False
+
+
+def generate_default_Dzk_solve_fn(optimizations: Mapping, k_fn):
+    def Dzk_solve_fn(z, *params, rhs=None, T=False):
+        zlen = z.numel()
+        if optimizations.get("Dzk", None) is None:
+            optimizations["Dzk"] = JACOBIAN(lambda z: k_fn(z, *params), z)
+        Dzk = optimizations["Dzk"]
+        if T == True:
+            if optimizations.get("FT", None) is None:
+                optimizations["FT"] = torch.lu(t(Dzk.reshape((zlen, zlen))))
+            return torch.lu_solve(rhs, *optimizations["FT"])
+        else:
+            if optimizations.get("F", None) is None:
+                optimizations["F"] = torch.lu(t(Dzk.reshape((zlen, zlen))))
+            return torch.lu_solve(rhs, *optimizations["F"])
+
+    optimizations["Dzk_solve_fn"] = Dzk_solve_fn
+    return
 
 
 def ensure_list(a):
@@ -22,36 +42,33 @@ def implicit_grads_1st(
     z,
     *params,
     Dg=None,
-    Dzk=None,
-    Dzk_solve_fn=None,
-    full_output=False,
     jvp_vec=None,
-    matrix_free_inverse=False,
+    matrix_free_inverse: bool = False,
+    full_output=False,
+    optimizations: Mapping = {},
 ):
+    optimizations = {k: v for (k, v) in optimizations.items()}  # local copy
     zlen, plen = prod(z.shape), [prod(param.shape) for param in params]
     jvp_vec = ensure_list(jvp_vec) if jvp_vec is not None else jvp_vec
 
-    cache = dict()
+    # construct a default Dzk_solve_fn ##########################
+    if optimizations.get("Dzk_solve_fn", None) is None:
+        generate_default_Dzk_solve_fn(optimizations, k_fn)
+    #############################################################
+
     if Dg is not None:
-        if Dzk_solve_fn is None:
-            if matrix_free_inverse:
-                A_fn = lambda x: JACOBIAN(
-                    lambda z: torch.sum(
-                        k_fn(z, *params).reshape(-1) * x.reshape(-1)
-                    ),
-                    z,
-                ).reshape(x.shape)
-                #v = -solve_cg_torch(A_fn, Dg.reshape((zlen, 1)), max_it=300)
-                v = -solve_gmres(A_fn, Dg.reshape((zlen, 1)), max_it=300)
-            else:
-                if Dzk is None:
-                    Dzk = JACOBIAN(lambda z: k_fn(z, *params), z)
-                Dzk = Dzk.reshape((zlen, zlen))
-                FT = torch.lu(t(Dzk))
-                cache["FT"] = FT
-                v = -torch.lu_solve(Dg.reshape((zlen, 1)), *FT)
+        if matrix_free_inverse:
+            A_fn = lambda x: JACOBIAN(
+                lambda z: torch.sum(
+                    k_fn(z, *params).reshape(-1) * x.reshape(-1)
+                ),
+                z,
+            ).reshape(x.shape)
+            # v = -solve_cg_torch(A_fn, Dg.reshape((zlen, 1)), max_it=300)
+            v = -solve_gmres(A_fn, Dg.reshape((zlen, 1)), max_it=300)
         else:
-            v = -Dzk_solve_fn(z, *params, Dg.reshape((zlen, 1)), T=True)
+            Dzk_solve_fn = optimizations["Dzk_solve_fn"]
+            v = -Dzk_solve_fn(z, *params, rhs=Dg.reshape((zlen, 1)), T=True)
         v = v.detach()
         fn = lambda *params: torch.sum(
             v.reshape(zlen) * k_fn(z, *params).reshape(zlen)
@@ -61,6 +78,7 @@ def implicit_grads_1st(
         ret = Dp_shaped[0] if len(params) == 1 else Dp_shaped
 
         if CHECK_GRADS:
+            ##^
             print("Checking 1st order grad")
             Dpz_ = implicit_grads_1st(k_fn, z, *params)
             Dpz_ = [Dpz_] if len(params) == 1 else Dpz_
@@ -81,6 +99,7 @@ def implicit_grads_1st(
             except:
                 print("Gradient 1st order check failed")
                 pdb.set_trace()
+            ##$
     else:
         if jvp_vec is not None:
             for param in params:
@@ -95,13 +114,10 @@ def implicit_grads_1st(
         else:
             Dpk = JACOBIAN(lambda *params: k_fn(z, *params), params)
             Dpk = [Dpk.reshape((zlen, plen)) for (Dpk, plen) in zip(Dpk, plen)]
-        if Dzk_solve_fn is None:
-            if Dzk is None:
-                Dzk = JACOBIAN(lambda z: k_fn(z, *params), z)
-            F = torch.lu(Dzk.reshape((zlen, zlen)))
-            Dpz = [-torch.lu_solve(Dpk, *F) for Dpk in Dpk]
-        else:
-            Dpz = [-Dzk_solve_fn(z, *params, Dpk, T=False) for Dpk in Dpk]
+
+        Dzk_solve_fn = optimizations["Dzk_solve_fn"]
+        Dpz = [-Dzk_solve_fn(z, *params, rhs=Dpk, T=False) for Dpk in Dpk]
+
         if jvp_vec is not None:
             Dpz_shaped = [Dpz.reshape(z.shape) for Dpz in Dpz]
         else:
@@ -109,12 +125,8 @@ def implicit_grads_1st(
                 Dpz.reshape(z.shape + param.shape)
                 for (Dpz, param) in zip(Dpz, params)
             ]
-        if Dzk_solve_fn is None:
-            cache["F"] = F
         ret = Dpz_shaped if len(params) != 1 else Dpz_shaped[0]
-    if Dzk_solve_fn is None:
-        cache["Dzk"] = Dzk
-    return (ret, cache) if full_output else ret
+    return (ret, optimizations) if full_output else ret
 
 
 def implicit_grads_2nd(
@@ -123,10 +135,8 @@ def implicit_grads_2nd(
     *params,
     Dg=None,
     Hg=None,
-    Dzk=None,
-    Dzzk=None,
-    Dzk_solve_fn=None,
     jvp_vec=None,
+    optimizations: Mapping = {},
 ):
     """
     compute implicit gradients of z wrt params (or p)
@@ -135,10 +145,16 @@ def implicit_grads_2nd(
         z: variable which we differentiate
         *params: variables wrt which we differentiate
     """
+    optimizations = {k: v for (k, v) in optimizations.items()}  # local copy
     zlen, plen = prod(z.shape), [prod(param.shape) for param in params]
     jvp_vec = ensure_list(jvp_vec) if jvp_vec is not None else jvp_vec
     if jvp_vec is not None:
         assert Dg is not None
+
+    # construct a default Dzk_solve_fn ##########################
+    if optimizations.get("Dzk_solve_fn", None) is None:
+        generate_default_Dzk_solve_fn(optimizations, k_fn)
+    #############################################################
 
     # compute 2nd implicit gradients
     if Dg is not None:
@@ -149,12 +165,8 @@ def implicit_grads_2nd(
         Hg_ = Hg.reshape((zlen, zlen)) if Hg is not None else Hg
 
         # compute the left hand vector in the VJP
-        if Dzk_solve_fn is None:
-            Dzk = JACOBIAN(lambda z: k_fn(z, *params), z).reshape((zlen, zlen))
-            FT = torch.lu(t(Dzk.reshape((zlen, zlen))))
-            v = -torch.lu_solve(Dg_.reshape((zlen, 1)), *FT).reshape((zlen, 1))
-        else:
-            v = -Dzk_solve_fn(z, *params, Dg_.reshape((zlen, 1)), T=True)
+        Dzk_solve_fn = optimizations["Dzk_solve_fn"]
+        v = -Dzk_solve_fn(z, *params, rhs=Dg_.reshape((zlen, 1)), T=True)
         v = v.detach()
         fn = lambda z, *params: torch.sum(
             v.reshape(zlen) * k_fn(z, *params).reshape(zlen)
@@ -170,9 +182,8 @@ def implicit_grads_2nd(
                     k_fn,
                     z,
                     *params,
-                    Dzk=Dzk,
-                    Dzk_solve_fn=Dzk_solve_fn,
                     jvp_vec=jvp_vec,
+                    optimizations=optimizations,
                 )
             )
             Dpz_jvp = [Dpz_jvp.reshape(-1).detach() for Dpz_jvp in Dpz_jvp]
@@ -222,9 +233,8 @@ def implicit_grads_2nd(
                         k_fn,
                         z,
                         *params,
-                        Dzk=Dzk,
-                        Dzk_solve_fn=Dzk_solve_fn,
                         Dg=g_,
+                        optimizations=optimizations,
                     )
                 )[i].reshape(-1)
                 for (i, g_) in enumerate(g_)
@@ -252,9 +262,8 @@ def implicit_grads_2nd(
                         k_fn,
                         z,
                         *params,
-                        Dzk=Dzk,
-                        Dzk_solve_fn=Dzk_solve_fn,
                         Dg=g_,
+                        optimizations=optimizations,
                     )
                 )[i].reshape(plen)
                 for ((i, g_), plen) in zip(enumerate(g_), plen)
@@ -272,14 +281,14 @@ def implicit_grads_2nd(
             ]
         else:
             # compute the full first order 1st gradients
-            Dpz = implicit_grads_1st(
-                k_fn,
-                z,
-                *params,
-                Dzk=Dzk,
-                Dzk_solve_fn=Dzk_solve_fn,
+            Dpz = ensure_list(
+                implicit_grads_1st(
+                    k_fn,
+                    z,
+                    *params,
+                    optimizations=optimizations,
+                )
             )
-            Dpz = [Dpz] if len(params) == 1 else Dpz
             Dpz = [
                 Dpz.reshape((zlen, plen)).detach()
                 for (Dpz, plen) in zip(Dpz, plen)
@@ -331,6 +340,7 @@ def implicit_grads_2nd(
                 for (Dpp, param) in zip(Dpp, params)
             ]
             if CHECK_GRADS:
+                ##^
                 print("Checking 2nd order grad")
                 Dpz, Dppz = implicit_grads_2nd(k_fn, z, *params)
                 Dpz = [Dpz] if len(params) == 1 else Dpz
@@ -360,27 +370,28 @@ def implicit_grads_2nd(
                 except AssertionError:
                     print("Gradient 2nd order check failed")
                     pdb.set_trace()
+                ##$
         return (
             (Dp_shaped[0], Dpp_shaped[0])
             if len(params) == 1
             else (Dp_shaped, Dpp_shaped)
         )
     else:
-        Dpz, cache = implicit_grads_1st(
+        Dpz, optimizations = implicit_grads_1st(
             k_fn,
             z,
             *params,
-            Dzk=Dzk,
-            Dzk_solve_fn=Dzk_solve_fn,
             full_output=True,
+            optimizations=optimizations,
         )
         Dpz = ensure_list(Dpz)
         Dpz = [Dpz.reshape(zlen, plen) for (Dpz, plen) in zip(Dpz, plen)]
 
         # compute derivatives
-        if Dzzk is None:
+        if optimizations.get("Dzzk", None) is None:
             Hk = HESSIAN_DIAG(k_fn, (z, *params))
             Dzzk, Dppk = Hk[0], Hk[1:]
+            optimizations["Dzzk"] = Dzzk
         else:
             Dppk = HESSIAN_DIAG(lambda *params: k_fn(z, *params), params)
         Dzpk = JACOBIAN(
@@ -406,21 +417,13 @@ def implicit_grads_2nd(
             + (t(Dpz)[None, ...] @ Dzzk) @ Dpz[None, ...]
             for (Dpz, Dzpk, Dpzk, Dppk) in zip(Dpz, Dzpk, Dpzk, Dppk)
         ]
-        if Dzk_solve_fn is not None:
-            Dppz = [
-                -Dzk_solve_fn(
-                    z, *params, lhs.reshape((zlen, plen * plen)), T=False
-                ).reshape((zlen, plen, plen))
-                for (lhs, plen) in zip(lhs, plen)
-            ]
-        else:
-            F = cache["F"]
-            Dppz = [
-                -torch.lu_solve(lhs.reshape((zlen, plen * plen)), *F).reshape(
-                    (zlen, plen, plen)
-                )
-                for (lhs, plen) in zip(lhs, plen)
-            ]
+        Dzk_solve_fn = optimizations["Dzk_solve_fn"]
+        Dppz = [
+            -Dzk_solve_fn(
+                z, *params, rhs=lhs.reshape((zlen, plen * plen)), T=False
+            ).reshape((zlen, plen, plen))
+            for (lhs, plen) in zip(lhs, plen)
+        ]
 
         # return computed values
         Dpz_shaped = [
@@ -445,10 +448,11 @@ def detach_args(*args):
 
 
 def generate_fns(
-    loss_fn, opt_fn, k_fn, Dzk_solve_fn=None, normalize_grad=False
+    loss_fn, opt_fn, k_fn, normalize_grad=False, optimizations: Mapping = {}
 ):
     sol_cache = dict()
     opt_fn_ = lambda *args, **kwargs: opt_fn(*args, **kwargs).detach()
+    optimizations = {k: v for (k, v) in optimizations.items()}
 
     @fn_with_sol_cache(opt_fn_, sol_cache)
     def f_fn(z, *params):
@@ -462,7 +466,7 @@ def generate_fns(
         params = detach_args(*params)
         g = JACOBIAN(loss_fn, (z, *params))
         Dp = implicit_grads_1st(
-            k_fn, z, *params, Dg=g[0], Dzk_solve_fn=Dzk_solve_fn
+            k_fn, z, *params, Dg=g[0], optimizations=optimizations
         )
         Dp = Dp if len(params) != 1 else [Dp]
         ret = [Dp + g for (Dp, g) in zip(Dp, g[1:])]
@@ -472,32 +476,27 @@ def generate_fns(
         return ret[0] if len(ret) == 1 else ret
 
     @fn_with_sol_cache(opt_fn_, sol_cache)
-    def h_fn(
-        z,
-        *params,
-    ):
+    def h_fn(z, *params):
         z = z.detach() if isinstance(z, torch.Tensor) else z
         params = detach_args(*params)
         g = JACOBIAN(loss_fn, (z, *params))
-        H = HESSIAN_DIAG(loss_fn, (z, *params))
-        # t_ = time.perf_counter()
+
+        if optimizations.get("Hz_fn", None) is None:
+            optimizations["Hz_fn"] = lambda z, *params: HESSIAN_DIAG(
+                lambda z: loss_fn(z, *params), (z,)
+            )[0]
+        Hz_fn = optimizations["Hz_fn"]
+        Hz = Hz_fn(z, *params)
+        H = [Hz] + HESSIAN_DIAG(lambda *params: loss_fn(z, *params), params)
+
         Dp, Dpp = implicit_grads_2nd(
-            k_fn, z, *params, Dg=g[0], Hg=H[0], Dzk_solve_fn=Dzk_solve_fn
+            k_fn,
+            z,
+            *params,
+            Dg=g[0],
+            Hg=H[0],
+            optimizations=optimizations,
         )
-        # t_ = time.perf_counter() - t_
-        # print("Elapsed: %9.4e" % t_)
-
-        # t_ = time.perf_counter()
-        # r = [torch.randn(param.shape) for param in params]
-        # Dp_, Dpp_ = implicit_grads_2nd(
-        #    k_fn, z, *params, Dg=g[0], Hg=H[0], Dzk_solve_fn=Dzk_solve_fn,
-        #    jvp_vec=r
-        # )
-        # t_ = time.perf_counter() - t_
-        # print("Elapsed: %9.4e" % t_)
-
-        # pdb.set_trace()
-
         Dpp = Dpp if len(params) != 1 else [Dpp]
         ret = [Dpp + H for (Dpp, H) in zip(Dpp, H[1:])]
         ret = [ret.detach() for ret in ret]

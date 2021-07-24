@@ -1,8 +1,9 @@
-import pdb, pickle, os
+import pdb, pickle, os, sys, time
 from pprint import pprint
 import gzip, shutil
 
 import numpy as np
+import zstandard as zstd
 
 
 def deskew(image, image_shape=None, negated=False):
@@ -95,6 +96,7 @@ except FileNotFoundError:
     train["images"] = np.stack(
         [deskew(z.reshape((28, 28))).reshape(-1) for z in train["images"]]
     )
+
     with gzip.open(archive_fname, "wb") as fp:
         pickle.dump((train, test), fp)
 

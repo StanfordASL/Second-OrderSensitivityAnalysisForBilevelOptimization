@@ -251,9 +251,7 @@ def positive_factorization_lobpcg(H, reg0):
     H = H.detach()
     if H.shape[-1] < 3:
         reg = torch.min(
-            torch.eig(
-                H.reshape((H.shape[-1], H.shape[-1])), eigenvectors=False
-            )[0][:, 0]
+            torch.linalg.eigvals(H.reshape((H.shape[-1], H.shape[-1]))).real
         )
     else:
         reg = torch.lobpcg(H, k=1, largest=False, niter=100, tol=1e-3)[0]

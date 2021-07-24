@@ -40,6 +40,16 @@ unnormalize = lambda x, params: x * params[1] + params[0]
 onehot = lambda *args, **kwargs: torch.nn.functional.one_hot(
     args[0].to(int), *args[1:], **kwargs
 ).to(args[0].dtype)
+
+t2n = (
+    lambda x: np.copy(x.detach().cpu().clone().numpy().astype(np.float64))
+    if isinstance(x, torch.Tensor)
+    else x
+)
+n2t = lambda x, device=None, dtype=None: torch.as_tensor(
+    x, device=device, dtype=dtype
+)
+
 ##$#############################################################################
 ##^# timing ####################################################################
 def elapsed(name, t1, end=None):
