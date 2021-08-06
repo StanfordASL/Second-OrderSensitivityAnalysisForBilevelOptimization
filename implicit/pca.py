@@ -1,4 +1,4 @@
-import time, os, sys, math, pdb
+import time, os, sys, math, pdb, random
 
 import matplotlib.pyplot as plt, numpy as np, torch
 from mpl_toolkits import mplot3d
@@ -6,8 +6,52 @@ from tqdm import tqdm
 
 from .utils import topts
 
+rand_sign = lambda: random.randint(0, 1) * 2 - 1
 
-def visualize_landscape(loss_fn, x_hist, N=30, log=True):
+
+def assess_convexity(Z):
+    # assume square grid
+    assert Z.shape[0] == Z.shape[-1]
+    rand_pos = lambda: random.randint(1, Z.shape[-1] - 1)
+    is_in = lambda idx: all(
+        idx[i] >= 0 and idx[i] < Z.shape[-1] for i in range(2)
+    )
+
+    nb_checks = 1000
+    nb_success = 0
+    for _ in range(nb_checks):
+        idx1 = (rand_pos(), rand_pos())
+        while True:
+            dir = rand_sign() * (2 * random.randint(0, Z.shape[-1] // 2))
+            idx2 = (idx1[0] + dir, idx1[1] + dir)
+            idx_middle = (idx1[0] + dir // 2, idx1[1] + dir // 2)
+            if is_in(idx2):
+                break
+        fa, fb = Z[idx1[0], idx1[1]], Z[idx2[0], idx2[1]]
+        fm = Z[idx_middle[0], idx_middle[1]]
+        if (fa + fb) / 2 >= fm:
+            nb_success += 1
+    print("Convexity check succeeded in: %d/%d" % (nb_success, nb_checks))
+
+
+#def assess_quasi_convexity(Z):
+#    # assume square grid
+#    assert Z.shape[0] == Z.shape[-1]
+#    rand_pos = lambda: random.randint(1, Z.shape[-1] - 1)
+#    is_in = lambda idx: all(
+#        idx[i] >= 0 and idx[i] < Z.shape[-1] for i in range(2)
+#    )
+#
+#    nb_checks = 1000
+#    nb_success = 0
+#    for _ in range(nb_checks):
+#        idx1 = (rand_pos(), rand_pos())
+#        f = Z[idx1[0], idx1[1]]
+#
+#    print("Quasi-Convexity check succeeded in: %d/%d" % (nb_success, nb_checks))
+
+
+def visualize_landscape(loss_fn, x_hist, N=30, log=True, verbose=False):
     param_shape = x_hist[0].shape
     if isinstance(x_hist, list) or isinstance(x_hist, tuple):
         X = torch.stack(x_hist, 0).reshape((-1, x_hist[0].numel()))
@@ -16,6 +60,9 @@ def visualize_landscape(loss_fn, x_hist, N=30, log=True):
     X_mean = torch.mean(X, -2)
     X = X - X_mean[None, :]
 
+    # computational part ####################################
+    if verbose:
+        print("Taking the SVD")
     U = torch.svd(X.T)[0][:, :2]  # find the first 2 dimensions
     X_projected = (U.T @ X.T).T.detach()  # project onto the first 2 dimensions
 
@@ -35,6 +82,7 @@ def visualize_landscape(loss_fn, x_hist, N=30, log=True):
             )
         )
     Zp = torch.stack(ls).reshape(Xp.shape)
+    assess_convexity(Zp)
     l_optimal = min(loss_fn(x_hist[-1]), torch.min(Zp))
 
     if log:
@@ -44,6 +92,19 @@ def visualize_landscape(loss_fn, x_hist, N=30, log=True):
 
     Xp, Yp, Zp = [z.detach().numpy() for z in [Xp, Yp, Zp]]
 
+    # plotting part #########################################
+    if verbose:
+        print("Plotting the contour plot")
+    plt.figure()
+    plt.contourf(Xp, Yp, Zp, 100)
+    plt.colorbar()
+    plt.plot(X_projected[:, 0], X_projected[:, 1], color="red")
+    plt.scatter(X_projected[:, 0], X_projected[:, 1], color="red")
+    plt.scatter(X_projected[-1, 0], X_projected[-1, 1], color="black")
+    plt.tight_layout()
+
+    if verbose:
+        print("Plotting the 3D surface")
     fig = plt.figure()
     ax = plt.axes(projection="3d")
     X_projected_loss = torch.stack(
@@ -67,24 +128,17 @@ def visualize_landscape(loss_fn, x_hist, N=30, log=True):
     ax.plot_surface(Xp, Yp, Zp)
     fig.tight_layout()
 
-    plt.figure()
-    plt.contourf(Xp, Yp, Zp, 100)
-    plt.colorbar()
-    plt.plot(X_projected[:, 0], X_projected[:, 1], color="red")
-    plt.scatter(X_projected[:, 0], X_projected[:, 1], color="red")
-    plt.scatter(X_projected[-1, 0], X_projected[-1, 1], color="black")
-    plt.tight_layout()
-
-    plt.draw_all()
-    plt.pause(1e-1)
+    # plt.draw_all()
+    # plt.pause(1e-1)
     return np.stack([Xp, Yp], -1), Zp
 
-#def fit_quadratic(X, f):
+
+# def fit_quadratic(X, f):
 #    topts = dict(device=X.device, dtype=X.dtype)
 #    n = X.shape[-1]
 #    L = torch.randn((n, n), **topts)
 #    p = torch.randn((n,), **topts)
-#    loss_fn = lambda z: 
+#    loss_fn = lambda z:
 
 if __name__ == "__main__":
     import tensorly as tl

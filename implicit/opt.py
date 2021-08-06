@@ -23,8 +23,9 @@ def minimize_agd(
     full_output=False,
     callback_fn=None,
     use_writer=False,
-    **kwargs
+    # **kwargs
 ):
+    kwargs = dict()
     assert len(args) > 0
     assert g_fn is not None or all(
         [isinstance(arg, torch.Tensor) for arg in args]
@@ -46,7 +47,7 @@ def minimize_agd(
     if verbose:
         print(tp.make_header())
     while it < max_it:
-        args_prev = [arg.clone() for arg in args]
+        args_prev = [arg.clone().detach() for arg in args]
         opt.zero_grad()
         if g_fn is None:
             l = torch.sum(f_fn(*args, **kwargs))
@@ -62,7 +63,7 @@ def minimize_agd(
                 arg.grad = torch.detach(g)
         g_norm = sum(
             torch.norm(arg.grad) for arg in args if arg.grad is not None
-        ) / len(args)
+        ).detach() / len(args)
         opt.step()
         args_hist.append([arg.detach().clone() for arg in args])
         if callback_fn is not None:
@@ -82,10 +83,11 @@ def minimize_agd(
                 for (arg, arg_prev) in zip(args, args_prev)
             )
         if verbose:
-            print(tp.make_values([it, imprv, l, g_norm]))
+            print(tp.make_values([it, imprv.detach(), l.detach(), g_norm]))
         for pgroup in opt.param_groups:
             pgroup["lr"] *= gam
         it += 1
+        #utl.print_gpu_mem_status(locals(), globals())
     if verbose:
         print(tp.make_footer())
     ret = [arg.detach() for arg in args]
@@ -111,8 +113,9 @@ def minimize_lbfgs(
     full_output=False,
     callback_fn=None,
     use_writer=False,
-    **kwargs
+    # **kwargs
 ):
+    kwargs = dict()
     assert len(args) > 0
     assert g_fn is not None or all(
         [isinstance(arg, torch.Tensor) for arg in args]
@@ -152,7 +155,8 @@ def minimize_lbfgs(
     while it < max_it:
         args_prev = [arg.detach().clone() for arg in args]
         l = opt.step(closure)
-        args_hist.append([arg.detach().clone() for arg in args])
+        if full_output:
+            args_hist.append([arg.detach().clone() for arg in args])
         if callback_fn is not None:
             callback_fn(*args)
         if batched:
@@ -166,7 +170,7 @@ def minimize_lbfgs(
             )
         else:
             imprv = sum(
-                torch.norm(arg_prev - arg)
+                torch.norm(arg_prev - arg).detach()
                 for (arg, arg_prev) in zip(args, args_prev)
             )
         if verbose:
@@ -200,8 +204,9 @@ def linesearch(
     batched=False,
     ls_pts_nb=5,
     force_step=False,
-    **kwargs
+    # **kwargs
 ):
+    kwargs = dict()
     opts = dict(device=x.device, dtype=x.dtype)
     if ls_pts_nb >= 2:
         bets = 10.0 ** torch.linspace(-1, 1, ls_pts_nb, **opts)
@@ -274,7 +279,7 @@ def minimize_sqp(
     full_output=False,
     callback_fn=None,
     use_writer=False,
-    **kwargs
+    **kwargs,
 ):
     if len(args) > 1:
         raise ValueError("SQP only only supports single variable functions")
@@ -319,7 +324,7 @@ def minimize_sqp(
             g_fn,
             ls_pts_nb=ls_pts_nb,
             force_step=force_step,
-            **kwargs
+            **kwargs,
         )
 
         x = x + torch.reshape(bet, (M,) + (1,) * len(x_shape[1:])) * d

@@ -2,6 +2,7 @@ import math, pdb, os, sys, time
 from functools import reduce
 from operator import mul
 from typing import Mapping
+from copy import copy
 
 import matplotlib.pyplot as plt, torch
 
@@ -12,6 +13,14 @@ from .inverse import solve_gmres, solve_cg, solve_cg_torch
 prod = lambda zs: reduce(mul, zs) if zs != () else 1
 
 CHECK_GRADS = False
+
+
+def dealloc_dict(d):
+    # boggles my mind why that would be necessaryu
+    # but it absolutely prevents memory leaks
+    keys = copy(list(d.keys()))
+    for k in keys:
+        del d[k]
 
 
 def generate_default_Dzk_solve_fn(optimizations: Mapping, k_fn):
@@ -80,7 +89,9 @@ def implicit_grads_1st(
         if CHECK_GRADS:
             ##^
             print("Checking 1st order grad")
-            Dpz_ = implicit_grads_1st(k_fn, z, *params)
+            Dpz_ = implicit_grads_1st(
+                k_fn, z, *params, optimizations=optimizations
+            )
             Dpz_ = [Dpz_] if len(params) == 1 else Dpz_
             Df = [
                 Dpz_.reshape((zlen, plen))
@@ -126,7 +137,11 @@ def implicit_grads_1st(
                 for (Dpz, param) in zip(Dpz, params)
             ]
         ret = Dpz_shaped if len(params) != 1 else Dpz_shaped[0]
-    return (ret, optimizations) if full_output else ret
+    if full_output:
+        return (ret, optimizations)
+    else:
+        dealloc_dict(optimizations)
+        return ret
 
 
 def implicit_grads_2nd(
@@ -342,7 +357,9 @@ def implicit_grads_2nd(
             if CHECK_GRADS:
                 ##^
                 print("Checking 2nd order grad")
-                Dpz, Dppz = implicit_grads_2nd(k_fn, z, *params)
+                Dpz, Dppz = implicit_grads_2nd(
+                    k_fn, z, *params, optimizations=optimizations
+                )
                 Dpz = [Dpz] if len(params) == 1 else Dpz
                 Dppz = [Dppz] if len(params) == 1 else Dppz
 
@@ -371,6 +388,7 @@ def implicit_grads_2nd(
                     print("Gradient 2nd order check failed")
                     pdb.set_trace()
                 ##$
+        dealloc_dict(optimizations)
         return (
             (Dp_shaped[0], Dpp_shaped[0])
             if len(params) == 1
@@ -434,6 +452,7 @@ def implicit_grads_2nd(
             Dppz.reshape(z.shape + param.shape + param.shape)
             for (Dppz, param) in zip(Dppz, params)
         ]
+        dealloc_dict(optimizations)
         return (
             (Dpz_shaped[0], Dppz_shaped[0])
             if len(params) == 1
@@ -466,12 +485,16 @@ def generate_fns(
         params = detach_args(*params)
         g = JACOBIAN(loss_fn, (z, *params))
         Dp = implicit_grads_1st(
-            k_fn, z, *params, Dg=g[0], optimizations=optimizations
+            k_fn, z.detach(), *params, Dg=g[0], optimizations=optimizations
         )
         Dp = Dp if len(params) != 1 else [Dp]
+        # opts = dict(device=z.device, dtype=z.dtype)
+        # Dp = [
+        #    torch.zeros(param.shape, **opts) for param in params
+        # ]
         ret = [Dp + g for (Dp, g) in zip(Dp, g[1:])]
         if normalize_grad:
-            ret = [z / (torch.norm(z) + 1e-7) for z in ret]
+            ret = [(z / (torch.norm(z) + 1e-7)).detach() for z in ret]
         ret = [ret.detach() for ret in ret]
         return ret[0] if len(ret) == 1 else ret
 

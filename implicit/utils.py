@@ -1,6 +1,8 @@
 ##^# ops import and utils ######################################################
 import os, pickle, time as time_module, pdb, math
 from pprint import pprint
+from collections import OrderedDict as odict
+from operator import itemgetter
 
 import torch, numpy as np
 from torch.utils.tensorboard import SummaryWriter
@@ -150,12 +152,17 @@ def to_tuple_(arg):
     else:
         return to_tuple_(np.array(arg))
 
+
 def to_tuple(*args):
     return tuple(to_tuple_(arg) for arg in args)
 
 
 def fn_with_sol_cache(fwd_fn, cache=None):
     def inner_decorator(fn):
+        #def fn2(*args, **kwargs):
+        #    return fn(fwd_fn(*args), *args, **kwargs)
+        #return fn2
+
         nonlocal cache
         cache = cache if cache is None else cache
 
@@ -170,6 +177,57 @@ def fn_with_sol_cache(fwd_fn, cache=None):
         return fn_with_sol
 
     return inner_decorator
+
+
+##$#############################################################################
+##^# GPU utils #################################################################
+def print_gpu_mem_status(locals, globals):
+    unit = 1e9  # GB
+
+    def sz(x):
+        return 4 if x.dtype == torch.float32 else 8
+
+    def size_of(variables):
+        return {k: z.numel() * sz(z) / unit for (k, z) in variables.items()}
+
+    def print_variables(variables):
+        for (k, z) in odict(
+            sorted(size_of(variables).items(), key=itemgetter(1), reverse=True)
+        ).items():
+            print("%010s: %9.4e GB" % (k, z))
+
+    print("#" * 80)
+    # local variables first #########################################
+    print("LOCAL VARIABLES:")
+    tensors = {k: z for (k, z) in locals.items() if isinstance(z, torch.Tensor)}
+    print("    requires grad:")
+    variables = {k: z for (k, z) in tensors.items() if z.requires_grad}
+    print_variables(variables)
+    print("    Total: %9.4e" % sum(size_of(variables).values()))
+    print("    does not require grad:")
+    variables = {k: z for (k, z) in tensors.items() if not z.requires_grad}
+    print_variables(variables)
+    print("    Total: %9.4e" % sum(size_of(variables).values()))
+    print("Total: %9.4e" % sum(size_of(tensors).values()))
+
+    # global variables second #######################################
+    print("GLOBAL VARIABLES:")
+    tensors = {
+        k: z for (k, z) in globals.items() if isinstance(z, torch.Tensor)
+    }
+    print("    requires grad:")
+    variables = {k: z for (k, z) in tensors.items() if z.requires_grad}
+    print_variables(variables)
+    print("    Total: %9.4e" % sum(size_of(variables).values()))
+    print("    does not require grad:")
+    variables = {k: z for (k, z) in tensors.items() if not z.requires_grad}
+    print_variables(variables)
+    print("    Total: %9.4e" % sum(size_of(variables).values()))
+    print("Total: %9.4e" % sum(size_of(tensors).values()))
+
+    print("#" * 80)
+
+    return
 
 
 ##$#############################################################################
