@@ -1,16 +1,7 @@
 import gzip, pickle, pdb, math
 import matplotlib.pyplot as plt, numpy as np, torch
 
-# feat map #####################################################################
-from feat_map import feat_map
-
-feat_map_ = feat_map
-
-def feat_map(X):
-    return feat_map_(torch.tensor(X)).numpy()
-################################################################################
-
-def main(Xs=None, save=False):
+def main(Xs=None, save=False, feat_map=None):
     self = main
 
     if Xs is None:
@@ -19,6 +10,8 @@ def main(Xs=None, save=False):
     elif isinstance(Xs, torch.Tensor):
         Xs = Xs.cpu().detach().numpy()
 
+    feat_map_ = feat_map
+    feat_map = lambda X: feat_map_(torch.tensor(X)).numpy()
 
     pcs = []
     Xs = feat_map(Xs)

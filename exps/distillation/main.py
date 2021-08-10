@@ -1,8 +1,10 @@
 import sys, os, math, pdb, time, pickle, gzip
+from shutil import rmtree
 
 os.chdir(os.path.abspath(os.path.dirname(__file__)))
 
 import torch, matplotlib.pyplot as plt, numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "auto_tuning"))
 
@@ -17,10 +19,12 @@ from objs import LS, CE
 from tv import tv, tv_l1
 import vis
 
-from feat_map import feat_map
-
 OPT = CE()
 
+def feat_map(X):
+    X = torch.sigmoid(X)
+    return X
+    # return torch.cat([X[..., 0:1] ** 0, X], -1)
 
 def k_fn(z, *params):
     self = k_fn
@@ -35,7 +39,7 @@ def opt_fn(*params):
     lam, Y = self.lam, self.Y
     (X,) = params
     Z = feat_map(X)
-    return OPT.solve(Z, Y, lam)
+    return OPT.solve(Z, Y, lam, max_it=50)
 
 
 def loss_fn(z, *params):
@@ -69,6 +73,8 @@ def loss_fn(z, *params):
 
 
 if __name__ == "__main__":
+    rmtree(os.path.join(os.path.dirname(__file__), "runs"))
+
     device, dtype = "cuda", torch.float32
     opts = dict(device=device, dtype=dtype)
     tensor = lambda x: torch.as_tensor(x, **opts)
@@ -95,10 +101,12 @@ if __name__ == "__main__":
 
     Y = torch.nn.functional.one_hot(torch.arange(10)).to(dtype).to(device)
 
-    # X = torch.randn((10, Xtr.shape[-1]), **opts) / math.sqrt(Xtr.shape[-1])
-    X = torch.stack(
-        [Xtr[torch.argmax(Ytr, -1) == i, :].mean(-2) for i in range(10)]
-    )
+    with gzip.open("data/data_ls_rand.pkl.gz", "rb") as fp:
+        X = tensor(pickle.load(fp))
+    #X = torch.randn((10, Xtr.shape[-1]), **opts) / math.sqrt(Xtr.shape[-1])
+    #X = torch.stack(
+    #    [Xtr[torch.argmax(Ytr, -1) == i, :].mean(-2) for i in range(10)]
+    #)
     #X = torch.stack(
     #    [Xtr[torch.argmax(Ytr, -1) == i, :][0, :] for i in range(10)]
     #)
@@ -107,13 +115,12 @@ if __name__ == "__main__":
     k_fn.lam, k_fn.Y = lam, Y
 
     Z = feat_map(X)
-    W = torch.zeros((Z.shape[-1], 10 - 1)) / (Z.shape[-1] + 10 - 1) * 2
-    W = W.to(device).to(dtype)
-    z, params = W, (X,)
+    params = (X,)
     loss_fn.params0 = tuple(param.detach().clone() for param in params)
 
-    k = k_fn(W, *params)
     W = opt_fn(*params)
+    k = k_fn(W, *params)
+    W = W + torch.randn(W.shape, **opts)
     k2 = k_fn(W, *params)
 
     Dzk_solve = lambda z, *params, rhs=None, T=False: OPT.Dzk_solve(
@@ -123,6 +130,8 @@ if __name__ == "__main__":
     f_fn, g_fn, h_fn = generate_fns(
         loss_fn, opt_fn, k_fn, optimizations=optimizations
     )
+
+    writer = SummaryWriter()
 
     def callback_fn(*params):
         self = callback_fn
@@ -135,7 +144,9 @@ if __name__ == "__main__":
                 .to(torch.float32)
                 .mean()
             )
-            vis.main(feat_map(params[0]))
+            #vis.main(feat_map(params[0]), feat_map=feat_map)
+            writer.add_scalar("acc", float(acc), self.it)
+            writer.flush()
             print("Accuracy of trained %3.1f%%" % (acc * 1e2))
         self.it += 1
 
@@ -143,7 +154,7 @@ if __name__ == "__main__":
     opt_opts = dict(callback_fn=callback_fn, verbose=True, use_writer=True)
     fns = [f_fn, g_fn] if method != "sqp" else [f_fn, g_fn, h_fn]
     if method == "agd":
-        opt_opts = dict(opt_opts, ai=1e-2, af=1e-2, max_it=10 ** 3)
+        opt_opts = dict(opt_opts, ai=1e-2, af=1e-2, max_it=10 ** 4)
         minimize_fn = minimize_agd
     elif method == "lbfgs":
         opt_opts = dict(opt_opts, lr=1e-1, max_it=10)
@@ -153,5 +164,5 @@ if __name__ == "__main__":
         minimize_fn = minimize_sqp
 
     Xs = minimize_fn(*fns, *params, **opt_opts)
-    with gzip.open("data/data.pkl.gz", "wb") as fp:
+    with gzip.open("data/data_ce_rand.pkl.gz", "wb") as fp:
         pickle.dump(Xs.cpu().numpy(), fp)

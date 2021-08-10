@@ -1,5 +1,6 @@
 import pdb, os, sys, time, gzip, pickle, math
 from pprint import pprint
+from collections import OrderedDict as odict
 
 import matplotlib.pyplot as plt, numpy as np, torch
 from tqdm import tqdm
@@ -84,7 +85,8 @@ def main(config):
 
     assert config["opt_low"] in ["ls", "ce"]
     OPT = CE() if config["opt_low"] == "ce" else LS()
-    lam0 = -3.0
+    # lam0 = -3.0
+    lam0 = -4.0
     if config["fmap"] == "vanilla":
         Ztr = poly_feat(Xtr, n=1)
         Zts = poly_feat(Xts, n=1)
@@ -94,7 +96,8 @@ def main(config):
         Ztr = poly_feat(Xtr, n=1, centers=centers)
         Zts = poly_feat(Xts, n=1, centers=centers)
         OPT = OPT_with_centers(OPT, centers.shape[-2])
-        param = torch.tensor([-1.0, lam0])
+        # param = torch.tensor([-1.0, lam0])
+        param = torch.tensor([-3.0, lam0])
     elif config["fmap"] == "diag":
         Ztr = poly_feat(Xtr, n=1)
         Zts = poly_feat(Xts, n=1)
@@ -123,7 +126,13 @@ def main(config):
     else:
         raise ValueError
 
+    print("#" * 80)
+    print(param.norm())
+    print("#" * 80)
+
     W = OPT.solve(Ztr, Ytr, param)
+    print((Zts.norm(), Ztr.norm(), W.norm()))
+    pdb.set_trace()
     Yp_tr = OPT.pred(W, Ztr, param)
     Yp_ts = OPT.pred(W, Zts, param)
     loss_tr, acc_tr = loss_fn(Yp_tr, Ytr, param), acc_fn(Yp_tr, Ytr)
@@ -133,7 +142,10 @@ def main(config):
     print("Loss: %9.4e" % loss_ts)
     print("Accuracy: %3.2f%%" % acc_ts)
     results["before"] = dict(
-        loss_tr=loss_tr, acc_tr=acc_tr, loss_ts=loss_ts, acc_ts=acc_ts
+        loss_tr=float(loss_tr),
+        acc_tr=float(acc_tr),
+        loss_ts=float(loss_ts),
+        acc_ts=float(acc_ts),
     )
 
     # define functions ##############################################
@@ -162,17 +174,31 @@ def main(config):
 
     # fn = lambda: h_fn.fn(W, param)
 
-    VERBOSE = True
+    hist = dict(loss_ts=odict(), acc_ts=odict())
+
+    def callback_fn(param):
+        nonlocal hist, f_fn
+        W = OPT.solve(Ztr, Ytr, param)
+        Yp_ts = OPT.pred(W, Zts, param)
+        loss_ts = float(loss_fn(Yp_ts, Yts, param))
+        acc_ts = float(acc_fn(Yp_ts, Yts))
+        print("Accuracy: %5.2f%%" % acc_ts)
+        idx = len(f_fn.cache.keys())  # function evaluations so far
+        hist["loss_ts"][idx] = loss_ts
+        hist["acc_ts"][idx] = acc_ts
+
+    VERBOSE = False
     if config["solver"] == "sqp":
         param, param_hist = minimize_sqp(
             f_fn,
             g_fn,
             h_fn,
             param,
-            reg0=1e-5,
+            reg0=1e-3,
             verbose=VERBOSE,
             max_it=config["max_it"],
             full_output=True,
+            callback_fn=callback_fn,
         )
     elif config["solver"] == "ipopt":
         param = minimize_ipopt(
@@ -187,6 +213,7 @@ def main(config):
             max_it=config["max_it"],
             lr=1e-1,
             full_output=True,
+            callback_fn=callback_fn,
         )
     elif config["solver"] == "agd":
         param, param_hist = minimize_agd(
@@ -198,16 +225,10 @@ def main(config):
             ai=1e-2,
             af=1e-2,
             full_output=True,
+            callback_fn=callback_fn,
         )
     else:
         raise ValueError
-
-    #visualize_landscape(
-    #    lambda param: loss_fn(
-    #        OPT.pred(OPT.solve(Ztr, Ytr, param), Zts, param), Yts, param
-    #    ),
-    #    param_hist,
-    #)
 
     W = OPT.solve(Ztr, Ytr, param)
     Yp_tr = OPT.pred(W, Ztr, param)
@@ -220,35 +241,66 @@ def main(config):
     print("Accuracy: %3.2f%%" % acc_ts)
 
     results["after"] = dict(
-        loss_tr=loss_tr, acc_tr=acc_tr, loss_ts=loss_ts, acc_ts=acc_ts
+        loss_tr=float(loss_tr),
+        acc_tr=float(acc_tr),
+        loss_ts=float(loss_ts),
+        acc_ts=float(acc_ts),
     )
 
-    return param, results, H_hist
+    return param, results, H_hist, hist
 
 
 if __name__ == "__main__":
     fmaps = ["vanilla", "conv", "diag", "centers", "conv_poly"]
-    #opt_lows = ["ls", "ce"]
-    #fmaps = ["conv_poly"]
+    # opt_lows = ["ls", "ce"]
+    # fmaps = ["conv_poly"]
     opt_lows = ["ls"]
+    solvers = ["agd", "sqp", "lbfgs"]
+    trials = range(10)
 
-    params = [(fmap, opt_low) for fmap in fmaps for opt_low in opt_lows]
+    params = [
+        (fmap, solver, opt_low, trial)
+        for fmap in fmaps
+        for opt_low in opt_lows
+        for trial in trials
+        for solver in solvers
+    ]
+    print(len(params))
 
-    for (fmap, opt_low) in params:
+    all_results = dict()
+    try:
+        with gzip.open("data/seeds.pkl.gz", "rb") as fp:
+            seeds = pickle.load(fp)
+    except FileNotFoundError:
+        seeds = {
+            (fmap, trial): np.random.randint(2 ** 31)
+            for fmap in fmaps for trial in trials
+        }
+        with gzip.open("data/seeds.pkl.gz", "wb") as fp:
+            pickle.dump(seeds, fp)
+
+    assert len(sys.argv) >= 2
+    idx_job = int(sys.argv[1])
+    for (idx, setting) in enumerate(params):
+        if idx != idx_job:
+            continue
+        fmap, solver, opt_low, trial = setting
         config = dict(
-            seed=0,
+            seed=seeds[(fmap, trial)],
             train_n=10 ** 3,
             test_n=10 ** 3,
             opt_low=opt_low,
             conv_size=2,
-            solver="sqp",
+            solver=solver,
             max_it=1,
             fmap=fmap,
         )
         print("#" * 80)
         pprint(config)
-        param, results, H_hist = LINE_PROFILER.wrap_function(
+        param, results, H_hist, hist = LINE_PROFILER.wrap_function(
             lambda: main(config)
         )()
-    #LINE_PROFILER.print_stats()
-    pdb.set_trace()
+        all_results[setting] = dict(results=results, hist=hist)
+    with gzip.open("data/all_results_%03d.pkl.gz" % idx_job, "wb") as fp:
+        pickle.dump(all_results, fp)
+    # LINE_PROFILER.print_stats()
