@@ -4,33 +4,30 @@ from pprint import pprint
 from collections import OrderedDict as odict
 from operator import itemgetter
 
+from .interface import init
+
+jaxm = init()
+
 import torch, numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
 
 ##$#############################################################################
 ##^# torch utils ###############################################################
-def topts(A):
-    return dict(device=A.device, dtype=A.dtype)
-
-
-ss = lambda x, dim=(): torch.sum(x ** 2, dim=dim)
-t = lambda x: x.transpose(-1, -2)
-diag = lambda x: x.diagonal(0, -1, -2)
 vec = lambda x: x.reshape(-1)
 identity = lambda x: x
 is_equal = (
     lambda a, b: (type(a) == type(b))
     and (a.shape == b.shape)
-    and (torch.norm(a - b) / math.sqrt(a.numel()) < 1e-7)
+    and (jaxm.norm(a - b) / math.sqrt(a.numel()) < 1e-7)
 )
 
 
 def normalize(x, dim=-2, params=None, min_std=1e-3):
     if params is None:
-        x_mu = torch.mean(x, dim, keepdim=True)
-        x_std = torch.maximum(
-            torch.std(x, dim, keepdim=True), torch.tensor(min_std, **topts(x))
+        x_mu = jaxm.mean(x, dim, keepdims=True)
+        x_std = jaxm.maximum(
+            jaxm.std(x, dim, keepdims=True), jaxm.array(min_std)
         )
     else:
         x_mu, x_std = params
@@ -39,32 +36,18 @@ def normalize(x, dim=-2, params=None, min_std=1e-3):
 
 unnormalize = lambda x, params: x * params[1] + params[0]
 
-onehot = lambda *args, **kwargs: torch.nn.functional.one_hot(
-    args[0].to(int), *args[1:], **kwargs
-).to(args[0].dtype)
-
-t2n = (
-    lambda x: np.copy(x.detach().cpu().clone().numpy().astype(np.float64))
-    if isinstance(x, torch.Tensor)
-    else x
+t2n = lambda x: x.detach().cpu().numpy()
+n2t = lambda x, **kw: torch.as_tensor(np.array(x), **kw)
+j2t = lambda x, **kw: torch.as_tensor(np.array(x), **kw)
+t2j = lambda x: jaxm.array(x)
+j2n = lambda x: np.array(x)
+n2j = lambda x: jaxm.array(x)
+x2j = lambda x: jaxm.array(x if not isinstance(x, torch.Tensor) else t2n(x))
+x2t = lambda x, **kw: torch.as_tensor(
+    x if not isinstance(x, jaxm.DeviceArray) else j2n(x), **kw
 )
-n2t = lambda x, device=None, dtype=None: torch.as_tensor(
-    x, device=device, dtype=dtype
-)
+x2n = lambda x: np.array(x) if not isinstance(x, torch.Tensor) else t2n(x)
 
-##$#############################################################################
-##^# timing ####################################################################
-def elapsed(name, t1, end=None):
-    t2 = time_module.time()
-    name = name if len(name) <= 20 else name[:17] + "..."
-    msg = "%20s took %9.4e ms" % (name, (t2 - t1) * 1e3)
-    if end is not None:
-        print(msg, end=end)
-    else:
-        print(msg)
-
-
-time = time_module.time
 ##$#############################################################################
 ##^# table printing utility class ##############################################
 class TablePrinter:
@@ -149,6 +132,8 @@ def to_tuple_(arg):
         return arg.tobytes()
     elif isinstance(arg, torch.Tensor):
         return to_tuple_(arg.cpu().detach().numpy())
+    elif isinstance(arg, jaxm.DeviceArray):
+        return to_tuple_(np.array(arg))
     else:
         return to_tuple_(np.array(arg))
 
@@ -159,75 +144,23 @@ def to_tuple(*args):
 
 def fn_with_sol_cache(fwd_fn, cache=None):
     def inner_decorator(fn):
-        #def fn2(*args, **kwargs):
-        #    return fn(fwd_fn(*args), *args, **kwargs)
-        #return fn2
-
         nonlocal cache
         cache = cache if cache is None else cache
 
+        fwd_fn_ = jaxm.jit(fwd_fn)
+
         def fn_with_sol(*args, **kwargs):
             cache, sol_key = fn_with_sol.cache, to_tuple(*args)
-            sol = fwd_fn(*args) if not sol_key in cache else cache[sol_key]
+            sol = fwd_fn_(*args) if not sol_key in cache else cache[sol_key]
             cache.setdefault(sol_key, sol)
-            return fn_with_sol.fn(sol, *args, **kwargs)
+            ret = fn_with_sol.fn(sol, *args, **kwargs)
+            return ret
 
         fn_with_sol.cache = cache
-        fn_with_sol.fn = fn
+        fn_with_sol.fn = jaxm.jit(fn)
         return fn_with_sol
 
     return inner_decorator
-
-
-##$#############################################################################
-##^# GPU utils #################################################################
-def print_gpu_mem_status(locals, globals):
-    unit = 1e9  # GB
-
-    def sz(x):
-        return 4 if x.dtype == torch.float32 else 8
-
-    def size_of(variables):
-        return {k: z.numel() * sz(z) / unit for (k, z) in variables.items()}
-
-    def print_variables(variables):
-        for (k, z) in odict(
-            sorted(size_of(variables).items(), key=itemgetter(1), reverse=True)
-        ).items():
-            print("%010s: %9.4e GB" % (k, z))
-
-    print("#" * 80)
-    # local variables first #########################################
-    print("LOCAL VARIABLES:")
-    tensors = {k: z for (k, z) in locals.items() if isinstance(z, torch.Tensor)}
-    print("    requires grad:")
-    variables = {k: z for (k, z) in tensors.items() if z.requires_grad}
-    print_variables(variables)
-    print("    Total: %9.4e" % sum(size_of(variables).values()))
-    print("    does not require grad:")
-    variables = {k: z for (k, z) in tensors.items() if not z.requires_grad}
-    print_variables(variables)
-    print("    Total: %9.4e" % sum(size_of(variables).values()))
-    print("Total: %9.4e" % sum(size_of(tensors).values()))
-
-    # global variables second #######################################
-    print("GLOBAL VARIABLES:")
-    tensors = {
-        k: z for (k, z) in globals.items() if isinstance(z, torch.Tensor)
-    }
-    print("    requires grad:")
-    variables = {k: z for (k, z) in tensors.items() if z.requires_grad}
-    print_variables(variables)
-    print("    Total: %9.4e" % sum(size_of(variables).values()))
-    print("    does not require grad:")
-    variables = {k: z for (k, z) in tensors.items() if not z.requires_grad}
-    print_variables(variables)
-    print("    Total: %9.4e" % sum(size_of(variables).values()))
-    print("Total: %9.4e" % sum(size_of(tensors).values()))
-
-    print("#" * 80)
-
-    return
 
 
 ##$#############################################################################

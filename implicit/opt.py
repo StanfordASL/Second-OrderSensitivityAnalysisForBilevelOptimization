@@ -6,7 +6,12 @@ from tqdm import tqdm
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-import utils as utl
+from .interface import init
+
+jaxm = init()
+
+from . import utils as utl
+from .utils import t2j, x2t
 
 ##$#############################################################################
 ##^# Accelerated Gradient Descent ##############################################
@@ -26,12 +31,13 @@ def minimize_agd(
     use_tqdm=True,
 ):
     assert len(args) > 0
-    assert g_fn is not None or all(
-        [isinstance(arg, torch.Tensor) for arg in args]
-    )
+    assert g_fn is not None
+
+    if callback_fn is not None:
+        callback_fn(*args)
+
+    args = [x2t(arg) for arg in args]
     args = [arg.clone().detach() for arg in args]
-    for arg in args:
-        arg.requires_grad = True
     imprv = float("inf")
     gam = (af / ai) ** (1.0 / max_it)
     opt = torch.optim.Adam(args, lr=ai)
@@ -43,9 +49,6 @@ def minimize_agd(
     )
     args_hist = [[arg.detach().clone() for arg in args]]
 
-    if callback_fn is not None:
-        callback_fn(*args)
-
     print_fn = print if not use_tqdm else tqdm.write
     if verbose:
         print_fn(tp.make_header())
@@ -53,25 +56,20 @@ def minimize_agd(
     for it in it_rng:
         args_prev = [arg.clone().detach() for arg in args]
         opt.zero_grad()
-        if g_fn is None:
-            l = torch.sum(f_fn(*args))
-            l.backward()
-            if batched:
-                l = l / args[0].shape[0]
-        else:
-            args_ = [arg for arg in args]
-            l = torch.mean(f_fn(*args_))
-            gs = g_fn(*args_)
-            gs = gs if isinstance(gs, list) or isinstance(gs, tuple) else [gs]
-            for (arg, g) in zip(args, gs):
-                arg.grad = torch.detach(g)
+        args_ = [t2j(arg) for arg in args]
+        l = torch.mean(x2t(f_fn(*args_)))
+        gs = g_fn(*args_)
+        gs = gs if isinstance(gs, list) or isinstance(gs, tuple) else [gs]
+        gs = [x2t(g) for g in gs]
+        for (arg, g) in zip(args, gs):
+            arg.grad = torch.detach(g)
         g_norm = sum(
             torch.norm(arg.grad) for arg in args if arg.grad is not None
         ).detach() / len(args)
         opt.step()
         args_hist.append([arg.detach().clone() for arg in args])
         if callback_fn is not None:
-            callback_fn(*args)
+            callback_fn(*[t2j(arg) for arg in args])
         if batched:
             imprv = sum(
                 torch.mean(
@@ -91,11 +89,11 @@ def minimize_agd(
         for pgroup in opt.param_groups:
             pgroup["lr"] *= gam
         it += 1
-        #utl.print_gpu_mem_status(locals(), globals())
     if verbose:
         print_fn(tp.make_footer())
-    ret = [arg.detach() for arg in args]
+    ret = [t2j(arg.detach()) for arg in args]
     ret = ret if len(args) > 1 else ret[0]
+    args_hist = [[t2j(arg) for arg in z] for z in args_hist]
     args_hist = [z if len(args) > 1 else z[0] for z in args_hist]
     if full_output:
         return ret, args_hist
@@ -120,34 +118,27 @@ def minimize_lbfgs(
     use_tqdm=True,
 ):
     assert len(args) > 0
-    assert g_fn is not None or all(
-        [isinstance(arg, torch.Tensor) for arg in args]
-    )
+    assert g_fn is not None
+
+    if callback_fn is not None:
+        callback_fn(*[t2j(arg) for arg in args])
+
+    args = [x2t(arg) for arg in args]
     args = [arg.detach().clone() for arg in args]
-    for arg in args:
-        arg.requires_grad = True
     imprv = float("inf")
     it = 0
     opt = torch.optim.LBFGS(args, lr=lr)
     args_hist = [[arg.detach().clone() for arg in args]]
 
-    if callback_fn is not None:
-        callback_fn(*args)
-
     def closure():
         opt.zero_grad()
-        if g_fn is None:
-            l = torch.sum(f_fn(*args))
-            l.backward()
-            if batched:
-                l = l / args[0].shape[0]
-        else:
-            args_ = [arg for arg in args]
-            l = torch.mean(f_fn(*args_))
-            gs = g_fn(*args_)
-            gs = gs if isinstance(gs, list) or isinstance(gs, tuple) else [gs]
-            for (arg, g) in zip(args, gs):
-                arg.grad = torch.detach(g)
+        args_ = [t2j(arg) for arg in args]
+        l = torch.mean(x2t(f_fn(*args_)))
+        gs = g_fn(*args_)
+        gs = gs if isinstance(gs, list) or isinstance(gs, tuple) else [gs]
+        gs = [x2t(g) for g in gs]
+        for (arg, g) in zip(args, gs):
+            arg.grad = torch.detach(g)
         return l
 
     tp = utl.TablePrinter(
@@ -166,7 +157,7 @@ def minimize_lbfgs(
         if full_output:
             args_hist.append([arg.detach().clone() for arg in args])
         if callback_fn is not None:
-            callback_fn(*args)
+            callback_fn(*[t2j(arg) for arg in args])
         if batched:
             imprv = sum(
                 torch.mean(
@@ -192,8 +183,9 @@ def minimize_lbfgs(
         it += 1
     if verbose:
         print_fn(tp.make_footer())
-    ret = [arg.detach() for arg in args]
+    ret = [t2j(arg.detach()) for arg in args]
     ret = ret if len(args) > 1 else ret[0]
+    args_hist = [[t2j(arg) for arg in z] for z in args_hist]
     args_hist = [z if len(args) > 1 else z[0] for z in args_hist]
     if full_output:
         return ret, args_hist
@@ -213,27 +205,25 @@ def linesearch(
     ls_pts_nb=5,
     force_step=False,
 ):
-    opts = dict(device=x.device, dtype=x.dtype)
     if ls_pts_nb >= 2:
-        bets = 10.0 ** torch.linspace(-1, 1, ls_pts_nb, **opts)
+        bets = 10.0 ** jaxm.linspace(-1, 1, ls_pts_nb)
     else:
-        bets = torch.tensor([1.0], **opts)
-    # bets = torch.linspace(1e-3, 2.0, ls_pts_nb)
-    y = torch.stack(
-        [torch.atleast_1d(f_fn(x + bet * d)) for bet in bets],
+        bets = jaxm.array([1.0])
+    y = jaxm.stack(
+        [jaxm.atleast_1d(f_fn(x + bet * d)) for bet in bets],
         1,
     )
-    y = torch.where(torch.isnan(y), torch.tensor(math.inf, **opts), y)
+    y = jaxm.where(jaxm.isnan(y), math.inf, y)
 
     if not force_step:
-        bets = torch.cat([torch.zeros((1,), **opts), bets], -1)
-        y = torch.cat([torch.atleast_1d(f)[..., None], y], -1)
+        bets = jaxm.cat([jaxm.zeros((1,)), bets], -1)
+        y = jaxm.cat([jaxm.atleast_1d(f)[..., None], y], -1)
 
-    idxs = torch.argmin(y, 1)
-    f_best = torch.tensor([y[i, idx] for (i, idx) in enumerate(idxs)], **opts)
-    bet = torch.tensor([bets[idx] for idx in idxs], **opts)
+    idxs = jaxm.argmin(y, 1)
+    f_best = jaxm.array([y[i, idx] for (i, idx) in enumerate(idxs)])
+    bet = jaxm.array([bets[idx] for idx in idxs])
 
-    d_norm = torch.norm(d, dim=tuple(range(-(d.ndim - 1), 0)))
+    d_norm = jaxm.norm(d.reshape((d.shape[0], -1)), axis=1)
 
     return bet, dict(d_norm=d_norm, f_best=f_best)
 
@@ -241,15 +231,14 @@ def linesearch(
 def positive_factorization_cholesky(H, reg0):
     reg_it_max = 0
     reg, reg_it = reg0, 0
-    H_reg, F = None, None
+    H_reg, F = H, None
     while True:
         try:
-            H_reg = torch.clone(H)
-            H_reg.diagonal(dim1=-2, dim2=-1)[:] += reg
-            F = torch.linalg.cholesky(H_reg)
-            assert not torch.any(torch.isnan(F))
+            H_reg = H + jaxm.diag(reg * jaxm.ones((H_reg.shape[-1],)))
+            F = jaxm.linalg.cholesky(H_reg)
+            assert not jaxm.any(jaxm.isnan(F[0]))
             break
-        except Exception as e:
+        except AssertionError as e:
             reg_it += 1
             reg *= 5e0
             if reg >= 0.99e7:
@@ -259,13 +248,9 @@ def positive_factorization_cholesky(H, reg0):
 
 
 def positive_factorization_lobpcg(H, reg0):
-    H = H.detach()
-    if H.shape[-1] < 3:
-        reg = torch.min(
-            torch.linalg.eigvals(H.reshape((H.shape[-1], H.shape[-1]))).real
-        )
-    else:
-        reg = torch.lobpcg(H, k=1, largest=False, niter=100, tol=1e-3)[0]
+    reg = jaxm.min(
+        jaxm.linalg.eigvals(H.reshape((H.shape[-1], H.shape[-1]))).real
+    )
     reg = reg.reshape(-1)[0]
     return positive_factorization_cholesky(H, max(max(-2.0 * reg, 0.0), reg0))
 
@@ -294,15 +279,15 @@ def minimize_sqp(
     if batched:
         M, x_size = x_shape[0], np.prod(x_shape[1:])
     else:
-        M, x_size = 1, x.numel()
+        M, x_size = 1, x.size
     it, imprv = 0, float("inf")
-    x_best, f_best = x, torch.atleast_1d(f_fn(x))
-    f_hist, x_hist = [f_best], [x.detach().clone()]
+    x_best, f_best = x, jaxm.atleast_1d(f_fn(x))
+    f_hist, x_hist = [f_best], [x]
 
     if callback_fn is not None:
         callback_fn(x)
 
-    t__ = utl.time()
+    t__ = time.time()
     tp = utl.TablePrinter(
         ["it", "imprv", "loss", "reg_it", "bet", "||g_prev||_2"],
         ["%05d", "%9.4e", "%9.4e", "%02d", "%9.4e", "%9.4e"],
@@ -316,17 +301,17 @@ def minimize_sqp(
     for it in it_rng:
         g = g_fn(x).reshape((M, x_size))
         H = h_fn(x).reshape((M, x_size, x_size))
-        if torch.any(torch.isnan(g)):
+        if jaxm.any(jaxm.isnan(g)):
             raise RuntimeError("Gradient is NaN")
-        if torch.any(torch.isnan(H)):
+        if jaxm.any(jaxm.isnan(H)):
             raise RuntimeError("Hessian is NaN")
 
         # F, (reg_it_max, _) = positive_factorization_cholesky(H, reg0)
         F, (reg_it_max, _) = positive_factorization_lobpcg(H, reg0)
 
-        d = torch.cholesky_solve(-g[..., None], F)[..., 0].reshape(x_shape)
-        # F = H + reg0 * I
-        # d = torch.solve(F, -g[..., None])[..., 0].reshape(x_shape)
+        d = jaxm.linalg.cholesky_solve(F, -g[..., None])[..., 0].reshape(
+            x_shape
+        )
         f = f_hist[-1]
         bet, data = linesearch(
             f,
@@ -338,9 +323,9 @@ def minimize_sqp(
             force_step=force_step,
         )
 
-        x = x + torch.reshape(bet, (M,) + (1,) * len(x_shape[1:])) * d
-        x_hist.append(x.clone().detach())
-        imprv = torch.mean(bet * data["d_norm"]).detach()
+        x = x + jaxm.reshape(bet, (M,) + (1,) * len(x_shape[1:])) * d
+        x_hist.append(x)
+        imprv = jaxm.mean(bet * data["d_norm"])
         if callback_fn is not None:
             callback_fn(x)
         if batched:
@@ -351,7 +336,7 @@ def minimize_sqp(
                     x_bests[i], f_bests[i] = x[i, ...], data["f_best"][i]
                 else:
                     x_bests[i], f_bests[i] = x_best[i, ...], f_best[i]
-            x_best, f_best = torch.stack(x_bests), torch.stack(f_bests)
+            x_best, f_best = jaxm.stack(x_bests), jaxm.stack(f_bests)
         else:
             if data["f_best"][0] < f_best[0]:
                 x_best, f_best = x, data["f_best"]
@@ -362,10 +347,10 @@ def minimize_sqp(
                     [
                         it,
                         imprv,
-                        torch.mean(data["f_best"]),
+                        jaxm.mean(data["f_best"]),
                         reg_it_max,
                         bet[0],
-                        torch.norm(g),
+                        jaxm.norm(g),
                     ]
                 )
             )
@@ -375,9 +360,9 @@ def minimize_sqp(
     if verbose:
         print_fn(tp.make_footer())
     if full_output:
-        return x_best, x_hist + [x_best.detach().clone()]
+        return x_best, x_hist + [x_best]
     else:
         return x_best
 
 
-###$#############################################################################
+##$#############################################################################

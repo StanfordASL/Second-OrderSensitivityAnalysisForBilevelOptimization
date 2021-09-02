@@ -3,25 +3,28 @@ import pdb, os, sys, time, gzip, pickle, math
 import torch, numpy as np
 
 sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), ".."))
-from implicit.utils import t, topts, is_equal, to_tuple
+from implicit.utils import t
 from implicit.opt import minimize_lbfgs, minimize_sqp
 from implicit.diff import JACOBIAN
+from implicit.interface import load_jax
+
+jax = load_jax()
 
 
 def Z2Za(Z, sig, d=None):
     d = Z.shape[-1] // 2 if d is None else d
     dist = Z[:, -d:]
-    return torch.cat(
-        [Z[:, :-d], torch.softmax(-dist / (10.0 ** sig), dim=1)], -1
+    return jax.cat(
+        [Z[:, :-d], jax.softmax(-dist / (10.0 ** sig), axis=1)], -1
     )
 
 
 def poly_feat(X, n=1, centers=None):
-    Z = torch.cat([X[..., 0:1] ** 0] + [X ** i for i in range(1, n + 1)], -1)
+    Z = jax.cat([X[..., 0:1] ** 0] + [X ** i for i in range(1, n + 1)], -1)
     if centers is not None:
         t_ = time.time()
-        dist = torch.norm(X[..., None, :] - centers, dim=-1) / X.shape[-1]
-        Z = torch.cat([Z, dist], -1)
+        dist = jax.norm(X[..., None, :] - centers, axis=-1) / X.shape[-1]
+        Z = jax.cat([Z, dist], -1)
     return Z
 
 
@@ -31,12 +34,12 @@ class LS:
 
     def solve(self, Z, Y, lam):
         n = Z.shape[-2]
-        A = t(Z) @ Z / n + (10.0 ** lam) * torch.eye(Z.shape[-1], **topts(Z))
-        return torch.cholesky_solve(t(Z) @ Y / n, torch.linalg.cholesky(A))
+        A = t(Z) @ Z / n + (10.0 ** lam) * jax.eye(Z.shape[-1])
+        return jax.linalg.cholesky_solve(jax.linalg.cholesky(A), t(Z) @ Y / n)
 
     def fval(self, W, Z, Y, lam):
         return (
-            torch.sum((Z @ W - Y) ** 2) + (10.0 ** lam) * torch.sum(W ** 2)
+            jax.sum((Z @ W - Y) ** 2) + (10.0 ** lam) * jax.sum(W ** 2)
         ) / 2
 
     def grad(self, W, Z, Y, lam):
@@ -44,13 +47,13 @@ class LS:
         return t(Z) @ (Z @ W - Y) / n + (10.0 ** lam) * W
 
     def hess(self, W, Z, Y, lam):
-        H = JACOBIAN(lambda W: self.grad(W, Z, Y, lam), W)
+        H = JACOBIAN(lambda W: self.grad(W, Z, Y, lam))(W)
         return H
 
     def Dzk_solve(self, W, Z, Y, lam, rhs, T=False, diag_reg=None):
         lam = lam.detach()
         n = Z.shape[-2]
-        A = t(Z) @ Z / n + (10.0 ** lam) * torch.eye(Z.shape[-1], **topts(Z))
+        A = t(Z) @ Z / n + (10.0 ** lam) * jax.eye(Z.shape[-1])
         rhs_shape = rhs.shape
         rhs = rhs.reshape((A.shape[-1], -1))
         if diag_reg is not None:
@@ -138,18 +141,11 @@ class CE:
         )
 
     def hess(self, W, X, Y, lam):
-        key = to_tuple(W, X, Y, lam)
-        if key in self.hess_map:
-            print("reusing hessian")
-            return self.hess_map[key]
-
         Yp_aug = CE._Yp_aug(W, X)
         s = torch.softmax(Yp_aug, -1)
         Ds = -s[..., :-1, None] @ s[..., None, :-1] + torch.diag_embed(
             s[..., :-1], 0
         )
-
-        # t_ = time.time()
         H = (
             torch.einsum(
                 "bijkl,bijkl,bijkl->ijkl",
@@ -159,38 +155,14 @@ class CE:
             )
             / X.shape[-2]
         )
-        # print("CPU time: %9.4e" % (time.time() - t_))
-
-        # t_ = time.time()
-        # Ds, X = Ds.cuda(), X.cuda()
-        # H = (
-        #    torch.einsum(
-        #        "bijkl,bijkl,bijkl->ijkl",
-        #        Ds[..., None, :, None, :],
-        #        X[..., :, None, None, None],
-        #        X[..., None, None, :, None],
-        #    )
-        #    / X.shape[-2]
-        # ).cpu()
-        # print("GPU time: %9.4e" % (time.time() - t_))
 
         H = H + (10.0 ** lam) * torch.eye(W.numel(), **topts(H)).reshape(
             H.shape
         )
-
-        # self.hess_map[key] = H.detach()
         return H
 
     def Dzk_solve(self, W, X, Y, lam, rhs=None, T=False):
         eps = 1e-7
-        # key = to_tuple(W, X, Y, lam)
-        # if key in self.fact_map:
-        #    print("reusing F")
-        #    F = self.fact_map[key]
-        # else:
-        #    H = self.hess(W, X, Y, lam).reshape((W.numel(),) * 2)
-        #    F = torch.linalg.cholesky(H)
-        #    # self.fact_map[key] = F.detach()
         H = self.hess(W, X, Y, lam).reshape((W.numel(),) * 2)
         F = torch.linalg.cholesky(H)
         rhs_ = rhs.reshape((F.shape[-1], -1))

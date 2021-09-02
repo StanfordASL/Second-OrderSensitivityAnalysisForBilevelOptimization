@@ -134,5 +134,6 @@ old/
 **/data/*
 **/runs/*
 .idea
+test/fashion
 
 *.png
