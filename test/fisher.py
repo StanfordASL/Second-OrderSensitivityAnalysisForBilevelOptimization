@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 import header
 
-from implicit import implicit_grads_1st
+from implicit import implicit_jacobian
 from implicit.diff import grad, JACOBIAN, HESSIAN_DIAG
 from implicit.opt import minimize_agd
 from implicit.nn_tools import nn_all_params, nn_forward

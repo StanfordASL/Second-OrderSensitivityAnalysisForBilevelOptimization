@@ -46,7 +46,7 @@ def ensure_list(a):
     return a if isinstance(a, list) or isinstance(a, tuple) else [a]
 
 
-def implicit_grads_1st(
+def implicit_jacobian(
     k_fn,
     z,
     *params,
@@ -89,7 +89,7 @@ def implicit_grads_1st(
         if CHECK_GRADS:
             ##^
             print("Checking 1st order grad")
-            Dpz_ = implicit_grads_1st(
+            Dpz_ = implicit_jacobian(
                 k_fn, z, *params, optimizations=optimizations
             )
             Dpz_ = [Dpz_] if len(params) == 1 else Dpz_
@@ -144,7 +144,7 @@ def implicit_grads_1st(
         return ret
 
 
-def implicit_grads_2nd(
+def implicit_hessian(
     k_fn,
     z,
     *params,
@@ -193,7 +193,7 @@ def implicit_grads_2nd(
             z.requires_grad = True
 
             Dpz_jvp = ensure_list(
-                implicit_grads_1st(
+                implicit_jacobian(
                     k_fn,
                     z,
                     *params,
@@ -244,7 +244,7 @@ def implicit_grads_2nd(
             ]
             Dpp3 = [
                 ensure_list(
-                    implicit_grads_1st(
+                    implicit_jacobian(
                         k_fn,
                         z,
                         *params,
@@ -273,7 +273,7 @@ def implicit_grads_2nd(
                 ]
             Dpp4 = [
                 ensure_list(
-                    implicit_grads_1st(
+                    implicit_jacobian(
                         k_fn,
                         z,
                         *params,
@@ -297,7 +297,7 @@ def implicit_grads_2nd(
         else:
             # compute the full first order 1st gradients
             Dpz = ensure_list(
-                implicit_grads_1st(
+                implicit_jacobian(
                     k_fn,
                     z,
                     *params,
@@ -357,7 +357,7 @@ def implicit_grads_2nd(
             if CHECK_GRADS:
                 ##^
                 print("Checking 2nd order grad")
-                Dpz, Dppz = implicit_grads_2nd(
+                Dpz, Dppz = implicit_hessian(
                     k_fn, z, *params, optimizations=optimizations
                 )
                 Dpz = [Dpz] if len(params) == 1 else Dpz
@@ -395,7 +395,7 @@ def implicit_grads_2nd(
             else (Dp_shaped, Dpp_shaped)
         )
     else:
-        Dpz, optimizations = implicit_grads_1st(
+        Dpz, optimizations = implicit_jacobian(
             k_fn,
             z,
             *params,
@@ -484,7 +484,7 @@ def generate_fns(
         z = z.detach() if isinstance(z, torch.Tensor) else z
         params = detach_args(*params)
         g = JACOBIAN(loss_fn, (z, *params))
-        Dp = implicit_grads_1st(
+        Dp = implicit_jacobian(
             k_fn, z.detach(), *params, Dg=g[0], optimizations=optimizations
         )
         Dp = Dp if len(params) != 1 else [Dp]
@@ -512,7 +512,7 @@ def generate_fns(
         Hz = Hz_fn(z, *params)
         H = [Hz] + HESSIAN_DIAG(lambda *params: loss_fn(z, *params), params)
 
-        Dp, Dpp = implicit_grads_2nd(
+        Dp, Dpp = implicit_hessian(
             k_fn,
             z,
             *params,

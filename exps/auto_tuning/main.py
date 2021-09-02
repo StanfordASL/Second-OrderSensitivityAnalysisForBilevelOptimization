@@ -13,7 +13,7 @@ from implicit.utils import t, diag, topts, fn_with_sol_cache
 from implicit.opt import minimize_sqp, minimize_agd, minimize_lbfgs
 import implicit.utils as utl
 
-from implicit import implicit_grads_1st, implicit_grads_2nd
+from implicit import implicit_jacobian, implicit_hessian
 from implicit import generate_fns
 import mnist
 
@@ -26,9 +26,11 @@ torch.set_default_dtype(torch.float64)
 
 LINE_PROFILER = line_profiler.LineProfiler(
     minimize_sqp,
-    implicit_grads_1st,
-    implicit_grads_2nd,
+    implicit_jacobian,
+    implicit_hessian,
 )
+
+PRINT_FN = lambda *args: tqdm.write(" ".join([str(x) for x in args]))
 
 
 def acc_fn(Yp, Y):
@@ -64,6 +66,7 @@ def get_centers(X, Y, n=1):
 
 
 def main(config):
+    global LINE_PROFILER
     results = dict()
     np.random.seed(config["seed"])
     torch.manual_seed(config["seed"])
@@ -84,7 +87,7 @@ def main(config):
     (Xts, Xtsp), (Yts, Ytsp) = get_mnist_data(mnist.test, n_ts, Xp=Xp, Yp=Yp)
 
     assert config["opt_low"] in ["ls", "ce"]
-    OPT = CE() if config["opt_low"] == "ce" else LS()
+    OPT = CE(max_it=50) if config["opt_low"] == "ce" else LS()
     # lam0 = -3.0
     lam0 = -4.0
     if config["fmap"] == "vanilla":
@@ -109,20 +112,21 @@ def main(config):
     elif config["fmap"] == "conv":
         Ztr, Zts = Xtr, Xts
         lam = lam0 * torch.ones(1)
-        conv_layer = torch.nn.Conv2d(1, 1, (config["conv_size"],) * 2)
+        in_channels, out_channels, stride = 1, 4, config["conv_size"]
+        conv_layer = torch.nn.Conv2d(in_channels, out_channels, (stride,) * 2)
         param = [z.reshape(-1) for z in conv_layer.parameters()][::-1]
-        assert param[0].numel() == 1
+        assert param[0].numel() == conv_layer.out_channels
         param = torch.cat([lam] + param)
-        OPT = OPT_conv(OPT, stride=config["conv_size"])
-    elif config["fmap"] == "conv_poly":
-        Ztr, Zts = Xtr, Xts
-        lam = lam0 * torch.ones(1)
-        conv_layer = torch.nn.Conv2d(1, 1, (config["conv_size"],) * 2)
-        C, C0 = [z.detach().reshape(-1) for z in conv_layer.parameters()]
-        C[:] = (1 + 1e-3 * torch.randn(C.shape)) / C.numel()
-        C0[:] = 1e-3 * torch.randn(C0.shape)
-        param = torch.cat([lam, C0, C])
-        OPT = OPT_conv_poly(OPT, stride=config["conv_size"])
+        OPT = OPT_conv(OPT, in_channels, out_channels, stride=stride)
+    # elif config["fmap"] == "conv_poly":
+    #    Ztr, Zts = Xtr, Xts
+    #    lam = lam0 * torch.ones(1)
+    #    conv_layer = torch.nn.Conv2d(1, 1, (config["conv_size"],) * 2)
+    #    C, C0 = [z.detach().reshape(-1) for z in conv_layer.parameters()]
+    #    C[:] = (1 + 1e-3 * torch.randn(C.shape)) / C.numel()
+    #    C0[:] = 1e-3 * torch.randn(C0.shape)
+    #    param = torch.cat([lam, C0, C])
+    #    OPT = OPT_conv_poly(OPT, stride=config["conv_size"])
     else:
         raise ValueError
 
@@ -131,8 +135,6 @@ def main(config):
     print("#" * 80)
 
     W = OPT.solve(Ztr, Ytr, param)
-    print((Zts.norm(), Ztr.norm(), W.norm()))
-    pdb.set_trace()
     Yp_tr = OPT.pred(W, Ztr, param)
     Yp_ts = OPT.pred(W, Zts, param)
     loss_tr, acc_tr = loss_fn(Yp_tr, Ytr, param), acc_fn(Yp_tr, Ytr)
@@ -155,7 +157,12 @@ def main(config):
     Dzk_solve_ = lambda W, param, rhs, T=False: OPT.Dzk_solve(
         W, Ztr, Ytr, param, rhs, T=T
     )
-    # Dpz = implicit_grads_1st(k_fn_, W, param, Dzk_solve_fn=Dzk_solve_)
+
+    W = opt_fn_(param)
+    k = k_fn_(W, param)
+    pdb.set_trace()
+
+    # Dpz = implicit_jacobian(k_fn_, W, param, Dzk_solve_fn=Dzk_solve_)
     optimizations = dict(Dzk_solve_fn=Dzk_solve_)
     f_fn, g_fn, h_fn = generate_fns(
         loss_fn_,
@@ -171,6 +178,9 @@ def main(config):
         ret = h_fn_(*args, **kwargs)
         H_hist.append(ret)
         return ret
+    LINE_PROFILER.add_function(f_fn.fn)
+    LINE_PROFILER.add_function(g_fn.fn)
+    LINE_PROFILER.add_function(h_fn_.fn)
 
     # fn = lambda: h_fn.fn(W, param)
 
@@ -182,50 +192,27 @@ def main(config):
         Yp_ts = OPT.pred(W, Zts, param)
         loss_ts = float(loss_fn(Yp_ts, Yts, param))
         acc_ts = float(acc_fn(Yp_ts, Yts))
-        print("Accuracy: %5.2f%%" % acc_ts)
+        PRINT_FN("Accuracy: %5.2f%%" % acc_ts)
         idx = len(f_fn.cache.keys())  # function evaluations so far
         hist["loss_ts"][idx] = loss_ts
         hist["acc_ts"][idx] = acc_ts
 
-    VERBOSE = False
+    oopt = dict(verbose=True, callback_fn=callback_fn, full_output=True)
+    oopt["max_it"] = (
+        min(10 ** config["max_it"], 500)
+        if config["solver"] == "agd"
+        else config["max_it"]
+    )
+    opt_fns = [f_fn, g_fn, h_fn] if config["solver"] == "sqp" else [f_fn, g_fn]
     if config["solver"] == "sqp":
-        param, param_hist = minimize_sqp(
-            f_fn,
-            g_fn,
-            h_fn,
-            param,
-            reg0=1e-3,
-            verbose=VERBOSE,
-            max_it=config["max_it"],
-            full_output=True,
-            callback_fn=callback_fn,
-        )
+        param, param_hist = minimize_sqp(*opt_fns, param, reg0=1e-3, **oopt)
     elif config["solver"] == "ipopt":
-        param = minimize_ipopt(
-            f_fn, g_fn, h_fn, param, verbose=VERBOSE, max_it=config["max_it"]
-        )
+        param = minimize_ipopt(*opt_fns, param, **oopt)
     elif config["solver"] == "lbfgs":
-        param, param_hist = minimize_lbfgs(
-            f_fn,
-            g_fn,
-            param,
-            verbose=VERBOSE,
-            max_it=config["max_it"],
-            lr=1e-1,
-            full_output=True,
-            callback_fn=callback_fn,
-        )
+        param, param_hist = minimize_lbfgs(*opt_fns, param, lr=1e-1, **oopt)
     elif config["solver"] == "agd":
         param, param_hist = minimize_agd(
-            f_fn,
-            g_fn,
-            param,
-            verbose=VERBOSE,
-            max_it=100 * config["max_it"],
-            ai=1e-2,
-            af=1e-2,
-            full_output=True,
-            callback_fn=callback_fn,
+            *opt_fns, param, ai=1e-2, af=1e-2, **oopt
         )
     else:
         raise ValueError
@@ -251,11 +238,18 @@ def main(config):
 
 
 if __name__ == "__main__":
-    fmaps = ["vanilla", "conv", "diag", "centers", "conv_poly"]
-    # opt_lows = ["ls", "ce"]
-    # fmaps = ["conv_poly"]
+    assert len(sys.argv) >= 2
+    idx_job = int(sys.argv[1])
+    seeds_fname = "data/seeds.pkl.gz"
+    #if idx_job == 0 and os.path.isfile(seeds_fname):
+    #    os.remove(seeds_fname)
+
+    #fmaps = ["vanilla", "conv", "diag", "centers"]
+    #opt_lows = ["ls", "ce"]
+    #solvers = ["agd", "sqp", "lbfgs"]
+    fmaps = ["diag"]
     opt_lows = ["ls"]
-    solvers = ["agd", "sqp", "lbfgs"]
+    solvers = ["sqp"]
     trials = range(10)
 
     params = [
@@ -269,18 +263,17 @@ if __name__ == "__main__":
 
     all_results = dict()
     try:
-        with gzip.open("data/seeds.pkl.gz", "rb") as fp:
+        with gzip.open(seeds_fname, "rb") as fp:
             seeds = pickle.load(fp)
     except FileNotFoundError:
         seeds = {
             (fmap, trial): np.random.randint(2 ** 31)
-            for fmap in fmaps for trial in trials
+            for fmap in fmaps
+            for trial in trials
         }
-        with gzip.open("data/seeds.pkl.gz", "wb") as fp:
+        with gzip.open(seeds_fname, "wb") as fp:
             pickle.dump(seeds, fp)
 
-    assert len(sys.argv) >= 2
-    idx_job = int(sys.argv[1])
     for (idx, setting) in enumerate(params):
         if idx != idx_job:
             continue
@@ -292,7 +285,7 @@ if __name__ == "__main__":
             opt_low=opt_low,
             conv_size=2,
             solver=solver,
-            max_it=1,
+            max_it=10,
             fmap=fmap,
         )
         print("#" * 80)
@@ -301,6 +294,6 @@ if __name__ == "__main__":
             lambda: main(config)
         )()
         all_results[setting] = dict(results=results, hist=hist)
-    with gzip.open("data/all_results_%03d.pkl.gz" % idx_job, "wb") as fp:
-        pickle.dump(all_results, fp)
-    # LINE_PROFILER.print_stats()
+    #with gzip.open("data/all_results_%03d.pkl.gz" % idx_job, "wb") as fp:
+    #    pickle.dump(all_results, fp)
+    #LINE_PROFILER.print_stats()

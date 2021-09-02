@@ -12,19 +12,16 @@ import header
 
 from mnist import train, test
 import implicit
-from implicit import generate_fns, implicit_grads_1st
+from implicit import generate_fns, implicit_jacobian
 from implicit.opt import minimize_lbfgs, minimize_agd, minimize_sqp
 from implicit import utils
 from objs import LS, CE
 from tv import tv, tv_l1
 import vis
 
-OPT = CE()
+from feat_map import feat_map
 
-def feat_map(X):
-    X = torch.sigmoid(X)
-    return X
-    # return torch.cat([X[..., 0:1] ** 0, X], -1)
+OPT = CE()
 
 def k_fn(z, *params):
     self = k_fn
@@ -72,8 +69,12 @@ def loss_fn(z, *params):
     return l
 
 
+actions = sys.argv[1:]
+
 if __name__ == "__main__":
-    rmtree(os.path.join(os.path.dirname(__file__), "runs"))
+    dirname = os.path.join(os.path.dirname(__file__), "runs")
+    if os.path.isdir(dirname):
+        rmtree(dirname)
 
     device, dtype = "cuda", torch.float32
     opts = dict(device=device, dtype=dtype)
@@ -98,9 +99,32 @@ if __name__ == "__main__":
     # Xts, Yts = Xts[r, :], Yts[r, :]
 
     loss_fn.Zts, loss_fn.Yts, loss_fn.lam = feat_map(Xts), Yts, lam
-
     Y = torch.nn.functional.one_hot(torch.arange(10)).to(dtype).to(device)
+    opt_fn.lam, opt_fn.Y = lam, Y
+    k_fn.lam, k_fn.Y = lam, Y
 
+if "eval" in actions:
+    with gzip.open("data/data_ls_rand.pkl.gz", "rb") as fp:
+        X_ls_rand = tensor(pickle.load(fp))
+    with gzip.open("data/data_ls_mean.pkl.gz", "rb") as fp:
+        X_ls_mean = tensor(pickle.load(fp))
+    with gzip.open("data/data_ce_rand.pkl.gz", "rb") as fp:
+        X_ce_rand = tensor(pickle.load(fp))
+    with gzip.open("data/data_ce_mean.pkl.gz", "rb") as fp:
+        X_ce_mean = tensor(pickle.load(fp))
+
+    names = ["ls_rand", "ls_mean", "ce_rand", "ce_mean"]
+    for (i, X) in enumerate([X_ls_rand, X_ls_mean, X_ce_rand, X_ce_mean]):
+        W = opt_fn(X)
+        Yp_ts = OPT.pred(W, loss_fn.Zts, lam)
+        l = torch.nn.CrossEntropyLoss()(Yp_ts, torch.argmax(Yts, -1))
+        acc = (Yp_ts.argmax(-1) == loss_fn.Yts.argmax(-1)).to(W.dtype).mean()
+        print(names[i])
+        print("loss = %9.4e" % l)
+        print("acc =  %9.4e" % acc)
+        print()
+
+if "train" in actions:
     with gzip.open("data/data_ls_rand.pkl.gz", "rb") as fp:
         X = tensor(pickle.load(fp))
     #X = torch.randn((10, Xtr.shape[-1]), **opts) / math.sqrt(Xtr.shape[-1])
@@ -111,10 +135,6 @@ if __name__ == "__main__":
     #    [Xtr[torch.argmax(Ytr, -1) == i, :][0, :] for i in range(10)]
     #)
 
-    opt_fn.lam, opt_fn.Y = lam, Y
-    k_fn.lam, k_fn.Y = lam, Y
-
-    Z = feat_map(X)
     params = (X,)
     loss_fn.params0 = tuple(param.detach().clone() for param in params)
 
@@ -144,7 +164,7 @@ if __name__ == "__main__":
                 .to(torch.float32)
                 .mean()
             )
-            #vis.main(feat_map(params[0]), feat_map=feat_map)
+            #vis.main(feat_map(params[0]))
             writer.add_scalar("acc", float(acc), self.it)
             writer.flush()
             print("Accuracy of trained %3.1f%%" % (acc * 1e2))
@@ -154,7 +174,7 @@ if __name__ == "__main__":
     opt_opts = dict(callback_fn=callback_fn, verbose=True, use_writer=True)
     fns = [f_fn, g_fn] if method != "sqp" else [f_fn, g_fn, h_fn]
     if method == "agd":
-        opt_opts = dict(opt_opts, ai=1e-2, af=1e-2, max_it=10 ** 4)
+        opt_opts = dict(opt_opts, ai=1e-2, af=1e-2, max_it=10 ** 3)
         minimize_fn = minimize_agd
     elif method == "lbfgs":
         opt_opts = dict(opt_opts, lr=1e-1, max_it=10)

@@ -10,13 +10,15 @@ from torch.utils.tensorboard import SummaryWriter
 
 import header
 
-from implicit import implicit_grads_1st
+from implicit import implicit_jacobian
 from implicit.diff import grad, JACOBIAN, HESSIAN_DIAG, torch_grad
 from implicit.opt import minimize_agd
 from implicit.nn_tools import nn_all_params, nn_structure, nn_forward
 from implicit.nn_tools import nn_forward2
 
 from mnist import train, test
+
+cat = lambda *args: np.concatenate(list(args))
 
 LAM = -4.0
 
@@ -163,11 +165,10 @@ def main(mode):
 
         pdb.set_trace()
 
-        Dpz = implicit_grads_1st(k_fn, z, lam)
+        Dpz = implicit_jacobian(k_fn, z, lam)
 
         # pdb.set_trace()
     elif mode == "eval_slurm":
-        torch.set_num_threads(4)
         assert len(sys.argv) >= 3
         CONFIG = dict(idx=int(sys.argv[2]))
 
@@ -175,8 +176,9 @@ def main(mode):
             results = pickle.load(fp)
         X = torch.as_tensor(results["X"], device=device)
         Y = torch.as_tensor(results["Y"], device=device)
-        # r = torch.randint(X.shape[0], size=(10 ** 1,))
-        # X, Y = X[r, ...], Y[r, ...]
+        r = torch.randint(X.shape[0], size=(10 ** 4,))
+        X, Y = X[r, ...], Y[r, ...]
+
 
         def k_fn(z, lam):
             ret = JACOBIAN(
@@ -186,7 +188,7 @@ def main(mode):
             )
             return ret
 
-        fname = "data/Dpz_%03d.pkl.gz"
+        fname = "data/Dpz_%03d_2.pkl.gz"
         lam = torch.tensor([LAM], device=device)
         idx, results_dpz = 0, odict()
         its = np.array(list(results["iters"].keys()))
@@ -194,16 +196,12 @@ def main(mode):
         its1 = its[its <= first_phase_it]
         its2 = its[its > first_phase_it]
 
-        # its = its[np.round(np.linspace(0, len(its) - 1, 50)).astype(int)]
-        its = np.concatenate(
-            [
-                its1[np.round(np.linspace(0, len(its1) - 1, 25)).astype(int)],
-                its2[np.round(np.linspace(0, len(its2) - 1, 25)).astype(int)],
-            ]
+        its = cat(
+            its1[np.round(np.linspace(0, len(its1) - 1, 25)).astype(int)],
+            its2[np.round(np.linspace(0, len(its2) - 1, 25)).astype(int)],
         )
-        print(its)
 
-        for it in its:
+        for (idx, it) in enumerate(its):
             if idx == CONFIG["idx"]:
                 results_dpz[it] = dict()
                 z = torch.tensor(results["iters"][it]).to(device)
@@ -211,20 +209,35 @@ def main(mode):
                 print("||g|| = %9.4e" % k_fn(z, lam).norm().cpu())
 
                 t = time.time()
-                Dzk = JACOBIAN(lambda z: k_fn(z, lam), z)
-                print("Elapsed %9.4e s" % (time.time() - t))
+                # Dzk = JACOBIAN(lambda z: k_fn(z, lam), z)
                 # Dzk = torch_grad(lambda z: k_fn(z, lam), verbose=True)(z)
+
+                lam_= jnp.array(lam.numpy().detach().cpu())
+                X_ = jnp.array(X.numpy().detach().cpu())
+                Y_ = jnp.array(Y.numpy().detach().cpu())
+
+                lens = [
+                    sum(p.numel() for p in m.parameters())
+                    for m in list(nn.modules())[1:]
+                ]
+                lens = [l for l in lens if l != 0]
+                zs = torch.split(z, lens)
+                # Dzk = JACOBIAN(lambda *zs: k_fn(torch.cat(zs), lam), zs)
+                # Dzk = torch_grad(lambda *zs: k_fn(torch.cat(zs), lam), verbose=True)(*zs)
+                Dzk = HESSIAN_DIAG(
+                    lambda *zs: loss_fn(torch.cat(zs), lam, X, Y), zs
+                )
+                print("Elapsed %9.4e s" % (time.time() - t))
+                pdb.set_trace()
 
                 results_dpz[it]["Dzk"] = Dzk.cpu().detach().numpy()
                 optimizations = dict(Dzk=Dzk)
-                Dpz = implicit_grads_1st(
+                Dpz = implicit_jacobian(
                     k_fn, z, lam, optimizations=optimizations
                 )
                 results_dpz[it]["Dpz"] = Dpz.cpu().detach().numpy()
                 with gzip.open(fname % idx, "wb") as fp:
                     pickle.dump(results_dpz, fp)
-            idx += 1
-
     else:
         print("Nothing to be done")
 

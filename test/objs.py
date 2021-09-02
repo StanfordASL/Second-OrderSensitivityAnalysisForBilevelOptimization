@@ -2,9 +2,10 @@ import pdb, os, sys, time, gzip, pickle, math
 
 import torch, numpy as np
 
-import header
+sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), ".."))
 from implicit.utils import t, topts, is_equal, to_tuple
 from implicit.opt import minimize_lbfgs, minimize_sqp
+from implicit.diff import JACOBIAN
 
 
 def Z2Za(Z, sig, d=None):
@@ -33,12 +34,18 @@ class LS:
         A = t(Z) @ Z / n + (10.0 ** lam) * torch.eye(Z.shape[-1], **topts(Z))
         return torch.cholesky_solve(t(Z) @ Y / n, torch.linalg.cholesky(A))
 
+    def fval(self, W, Z, Y, lam):
+        return (
+            torch.sum((Z @ W - Y) ** 2) + (10.0 ** lam) * torch.sum(W ** 2)
+        ) / 2
+
     def grad(self, W, Z, Y, lam):
         n = Z.shape[-2]
         return t(Z) @ (Z @ W - Y) / n + (10.0 ** lam) * W
 
     def hess(self, W, Z, Y, lam):
-        raise NotImplementedError
+        H = JACOBIAN(lambda W: self.grad(W, Z, Y, lam), W)
+        return H
 
     def Dzk_solve(self, W, Z, Y, lam, rhs, T=False, diag_reg=None):
         lam = lam.detach()
@@ -62,9 +69,10 @@ class LS:
 
 
 class CE:
-    def __init__(self):
+    def __init__(self, max_it=8, verbose=False):
         self.hess_map = dict()
         self.fact_map = dict()
+        self.max_it, self.verbose = max_it, verbose
 
     @staticmethod
     def _Yp_aug(W, X):
@@ -77,7 +85,7 @@ class CE:
         Yp = CE._Yp_aug(W, X)
         return torch.softmax(Yp, -1)
 
-    def solve(self, X, Y, lam, method="", verbose=False, max_it=8):
+    def solve(self, X, Y, lam, method=""):
         if method == "cvx":
             import cvxpy as cp
 
@@ -101,7 +109,15 @@ class CE:
             Y_ls.scatter_(-1, mask, torch.ones(mask.shape, **topts(Y)))
 
             W = LS().solve(X, Y_ls, lam)[..., :-1]
-            W = minimize_lbfgs(f_fn, g_fn, W, max_it=max_it, verbose=verbose, lr=1e-1)
+            W = minimize_lbfgs(
+                f_fn,
+                g_fn,
+                W,
+                max_it=self.max_it,
+                verbose=self.verbose,
+                lr=1e-1,
+                use_tqdm=False,
+            )
             # W = minimize_sqp(f_fn, g_fn, h_fn, W, max_it=1, verbose=False)
         return W
 
@@ -167,11 +183,11 @@ class CE:
 
     def Dzk_solve(self, W, X, Y, lam, rhs=None, T=False):
         eps = 1e-7
-        #key = to_tuple(W, X, Y, lam)
-        #if key in self.fact_map:
+        # key = to_tuple(W, X, Y, lam)
+        # if key in self.fact_map:
         #    print("reusing F")
         #    F = self.fact_map[key]
-        #else:
+        # else:
         #    H = self.hess(W, X, Y, lam).reshape((W.numel(),) * 2)
         #    F = torch.linalg.cholesky(H)
         #    # self.fact_map[key] = F.detach()
@@ -235,12 +251,29 @@ class OPT_with_diag:
 
     def solve(self, Z, Y, param):
         lam_diag, lam = self.get_params(param)
-        return self.OPT.solve(Z, Y, lam)
+        f_fn = lambda W: self.fval(W, Z, Y, param)
+        g_fn = lambda W: self.grad(W, Z, Y, param)
+        h_fn = lambda W: self.hess(W, Z, Y, param)
+        W = self.OPT.solve(Z, Y, lam)
+        ret = minimize_sqp(
+            f_fn,
+            g_fn,
+            h_fn,
+            W,
+            verbose=True,
+            max_it=100,
+            reg0=1e-9,
+            force_step=True,
+        )
+        return ret
+        # return self.OPT.solve(Z, Y, lam)
 
     def fval(self, W, Z, Y, param):
         lam_diag, lam = self.get_params(param)
         fval_ = self.OPT.fval(W, Z, Y, lam)
-        return fval_ + 0.5 * torch.sum((10 ** lam_diag) * W ** 2)
+        return fval_ + 0.5 * torch.sum(
+            (10.0 ** lam_diag).reshape(W.shape) * W ** 2
+        )
 
     def grad(self, W, Z, Y, param):
         lam_diag, lam = self.get_params(param)
@@ -275,7 +308,9 @@ class OPT_conv:
 
     def get_params(self, params):
         params = params.reshape(-1)
-        lam, C0, C = params[0], params[1], params[2:]
+        lam = params[0]
+        C0 = params[1 : 1 + self.out_channels]
+        C = params[C0.numel() + 1 :]
         n = round(math.sqrt(C.numel() / self.in_channels / self.out_channels))
         lam = torch.clamp(lam, -4, 1)
         return lam, C0, C.reshape((self.out_channels, self.in_channels, n, n))
@@ -284,8 +319,9 @@ class OPT_conv:
         n = round(math.sqrt(Z.shape[-1] / self.in_channels))
         Za = Z.reshape((-1, self.in_channels, n, n))
         Za = torch.nn.functional.conv2d(Za, C, stride=self.stride)
+        Za = Za + C0[..., None, None]
         Za = Za.reshape((-1, Za[0, ...].numel()))
-        return torch.cat([Za + C0, Za[..., 0:1] ** 0], -1)
+        return torch.cat([torch.tanh(Za), Za[..., 0:1] ** 0], -1)
 
     def pred(self, W, Z, param):
         lam, C0, C = self.get_params(param)

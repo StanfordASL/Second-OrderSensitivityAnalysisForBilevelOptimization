@@ -3,7 +3,7 @@ import unittest, pdb, time
 import torch
 
 import header
-from implicit import implicit_grads_2nd
+from implicit import implicit_hessian
 import objs
 
 CE = objs.CE()
@@ -25,11 +25,11 @@ class DpzTest(unittest.TestCase):
             W, X @ p, Y, lam, rhs, T=T
         )
         optimizations = dict(Dzk_solve_fn=Dzk_solve_fn)
-        Dpz, Dppz = implicit_grads_2nd(k_fn, W, p, optimizations=optimizations)
+        Dpz, Dppz = implicit_hessian(k_fn, W, p, optimizations=optimizations)
         self.assertEqual(Dpz.shape, (W.shape + p.shape))
         self.assertEqual(Dppz.shape, (W.shape + p.shape + p.shape))
 
-        Dpz2, Dppz2 = implicit_grads_2nd(k_fn, W, p)
+        Dpz2, Dppz2 = implicit_hessian(k_fn, W, p)
         self.assertEqual(Dpz2.shape, (W.shape + p.shape))
         self.assertEqual(Dppz2.shape, (W.shape + p.shape + p.shape))
 
@@ -54,14 +54,14 @@ class DpzTest(unittest.TestCase):
 
         t_ = time.time()
         optimizations = dict(Dzk_solve_fn=Dzk_solve_fn)
-        Dpz1, Dppz1 = implicit_grads_2nd(
+        Dpz1, Dppz1 = implicit_hessian(
             k_fn, W, p, Dg=v, optimizations=optimizations
         )
         if VERBOSE:
             print("Elapsed %9.4e" % (time.time() - t_))
 
         t_ = time.time()
-        Dpz2, Dppz2 = implicit_grads_2nd(
+        Dpz2, Dppz2 = implicit_hessian(
             k_fn, W, p, Dg=v, jvp_vec=jvp_vec, optimizations=optimizations
         )
         if VERBOSE:

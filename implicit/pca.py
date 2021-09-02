@@ -34,24 +34,9 @@ def assess_convexity(Z):
     print("Convexity check succeeded in: %d/%d" % (nb_success, nb_checks))
 
 
-#def assess_quasi_convexity(Z):
-#    # assume square grid
-#    assert Z.shape[0] == Z.shape[-1]
-#    rand_pos = lambda: random.randint(1, Z.shape[-1] - 1)
-#    is_in = lambda idx: all(
-#        idx[i] >= 0 and idx[i] < Z.shape[-1] for i in range(2)
-#    )
-#
-#    nb_checks = 1000
-#    nb_success = 0
-#    for _ in range(nb_checks):
-#        idx1 = (rand_pos(), rand_pos())
-#        f = Z[idx1[0], idx1[1]]
-#
-#    print("Quasi-Convexity check succeeded in: %d/%d" % (nb_success, nb_checks))
-
-
-def visualize_landscape(loss_fn, x_hist, N=30, log=True, verbose=False):
+def visualize_landscape(
+    loss_fn, x_hist, N=30, log=True, verbose=False, zoom_scale=1.0
+):
     param_shape = x_hist[0].shape
     if isinstance(x_hist, list) or isinstance(x_hist, tuple):
         X = torch.stack(x_hist, 0).reshape((-1, x_hist[0].numel()))
@@ -66,7 +51,7 @@ def visualize_landscape(loss_fn, x_hist, N=30, log=True, verbose=False):
     U = torch.svd(X.T)[0][:, :2]  # find the first 2 dimensions
     X_projected = (U.T @ X.T).T.detach()  # project onto the first 2 dimensions
 
-    scale = 30.0 * torch.mean(torch.std(X_projected, -2))
+    scale = 30.0 * zoom_scale * torch.mean(torch.std(X_projected, -2))
     Xp, Yp = torch.meshgrid(
         *((torch.linspace(-scale / 2, scale / 2, N, **topts(X)),) * 2)
     )
@@ -119,13 +104,13 @@ def visualize_landscape(loss_fn, x_hist, N=30, log=True, verbose=False):
     else:
         X_projected_loss = X_projected_loss - l_optimal + 1e-7
 
-    ax.plot(
-        X_projected[:, 0], X_projected[:, 1], X_projected_loss, "ro", alpha=0.5
-    )
-    ax.plot(
-        X_projected[:, 0], X_projected[:, 1], X_projected_loss, "r", alpha=0.5
-    )
-    ax.plot_surface(Xp, Yp, Zp)
+    #ax.plot(
+    #    X_projected[:, 0], X_projected[:, 1], X_projected_loss, "ro", alpha=0.5
+    #)
+    #ax.plot(
+    #    X_projected[:, 0], X_projected[:, 1], X_projected_loss, "r", alpha=0.5
+    #)
+    ax.plot_surface(Xp, Yp, Zp, cmap=plt.get_cmap("viridis"))
     fig.tight_layout()
 
     # plt.draw_all()

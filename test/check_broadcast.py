@@ -3,7 +3,7 @@ import torch, sys, pdb
 sys.path.append("auto_tuning")
 
 from objs import CE
-from implicit import implicit_grads_2nd
+from implicit import implicit_hessian
 
 torch.set_default_dtype(torch.double)
 
@@ -34,7 +34,7 @@ W = opt_fn(param)
 k = k_fn(W, param)
 print(k)
 
-g, H = implicit_grads_2nd(k_fn, W, param)
+g, H = implicit_hessian(k_fn, W, param)
 H = H.reshape((W.numel(),) + (param.numel(),) * 2)
 v = torch.randn(W.numel())
 temp1 = kron(v.reshape((1, -1)), torch.eye(param.numel()))
@@ -43,6 +43,6 @@ H1 = kron(v.reshape((1, -1)), torch.eye(param.numel())) @ torch.cat(
 )
 H2 = torch.sum(v[..., None, None] * H, -3)
 
-g_, H3 = implicit_grads_2nd(k_fn, W, param, Dg=v)
+g_, H3 = implicit_hessian(k_fn, W, param, Dg=v)
 
 pdb.set_trace()

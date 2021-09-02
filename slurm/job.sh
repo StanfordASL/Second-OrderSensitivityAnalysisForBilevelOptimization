@@ -10,7 +10,7 @@ program_file="../exps/auto_tuning/main.py"
 
 date
 
-nb_runs=30
+nb_runs=150
 
 wait # barrier #################################################################
 

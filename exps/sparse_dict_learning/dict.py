@@ -8,7 +8,7 @@ from sklearn.linear_model import ElasticNet
 import header
 
 from implicit.opt import minimize_lbfgs, minimize_sqp, minimize_agd
-from implicit import implicit_grads_1st, implicit_grads_2nd, generate_fns
+from implicit import implicit_jacobian, implicit_hessian, generate_fns
 from implicit import JACOBIAN, HESSIAN_DIAG, grad
 from implicit.utils import t2n, n2t
 
@@ -248,7 +248,7 @@ if True and __name__ == "__main__":
     )
     import line_profiler as lp
 
-    prof = lp.LineProfiler(g_fn.fn, implicit_grads_1st, SC.Dzk_solve)
+    prof = lp.LineProfiler(g_fn.fn, implicit_jacobian, SC.Dzk_solve)
     minimize_sqp = prof.wrap_function(minimize_sqp)
     minimize_lbfgs = prof.wrap_function(minimize_lbfgs)
     minimize_agd = prof.wrap_function(minimize_agd)

@@ -1,7 +1,12 @@
-import sys, pdb, time, gzip, pickle
+import os, sys, pdb, time, gzip, pickle
 from collections import OrderedDict as odict
+from copy import copy
 
-import torch, cvxpy as cp, numpy as np
+import torch
+
+DEVICE, DTYPE = "cpu", torch.float64
+
+import cvxpy as cp, numpy as np
 import scipy.sparse as sp, scipy.sparse.linalg as spla
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -13,7 +18,7 @@ import osqp
 import header
 
 from implicit.opt import minimize_lbfgs, minimize_sqp, minimize_agd
-from implicit import implicit_grads_1st, implicit_grads_2nd, generate_fns
+from implicit import implicit_jacobian, implicit_hessian, generate_fns
 from implicit.diff import JACOBIAN, HESSIAN_DIAG, torch_grad as grad
 from implicit.pca import visualize_landscape
 
@@ -146,7 +151,7 @@ class MSVM:
         K = sphcat([spvcat([K11, K21]), spvcat([K12, K22])])
         return K
 
-    def Dzk_solve(self, V, Z, Y, *params, rhs=None, T=False, diag_reg=1e-5):
+    def Dzk_solve(self, V, Z, Y, *params, rhs=None, T=False, diag_reg=1e-12):
         K = self.hess(V, Z, Y, *params)
         if diag_reg is not None:
             K = K + diag_reg * speye(K.shape[-1])
@@ -168,6 +173,12 @@ def loss_fn(V, *params):
 def Hz_fn(V, *params):
     global OPT, Zts, Yts
     W = OPT._split_W(V)
+
+    # loss_ = (
+    #    lambda w: -torch.sum(Yts * torch.softmax(Zts @ w, -1)) / Yts.shape[-2]
+    # )
+    # return torch.autograd.functional.hessian(loss_, W)
+
     Yp_aug = OPT.pred(V, Zts)
     s = torch.softmax(Yp_aug, -1)
     Ds = -s[..., :, None] @ s[..., None, :] + torch.diag_embed(s[..., :], 0)
@@ -199,21 +210,21 @@ actions = [z for z in sys.argv[1:]]
 if __name__ == "__main__":
     global OPT, Zts, Yts
 
-    device, dtype = "cpu", torch.float64
+    device, dtype = DEVICE, DTYPE
     opts = dict(device=device, dtype=dtype)
     Xtr, Ytr = mnist.train["images"], mnist.train["labels"]
     Xts, Yts = mnist.test["images"], mnist.test["labels"]
 
     r = np.random.randint(Xtr.shape[0], size=(200,))
-
     Xtr = n2t(Xtr[r, :], device=device).to(dtype)
     Ytr = torch.nn.functional.one_hot(
         n2t(Ytr[r], device=device).to(torch.long), 10
     ).to(dtype)
 
-    Xts = n2t(Xts, device=device).to(dtype)
+    r = np.random.randint(Xts.shape[0], size=(2000,))
+    Xts = n2t(Xts[r, :], device=device).to(dtype)
     Yts = torch.nn.functional.one_hot(
-        n2t(Yts, device=device).to(torch.long), 10
+        n2t(Yts[r], device=device).to(torch.long), 10
     ).to(dtype)
 
     Ztr = torch.cat([Xtr[:, :1] ** 0, Xtr], -1)  # [:, :500]
@@ -262,25 +273,70 @@ if "check" in actions:
 if "optimize" in actions:
     method = "sqp"
     opt_opts = dict(verbose=True, full_output=True)
-    fns = [f_fn, g_fn] if method != "sqp" else [f_fn, g_fn, h_fn]
-    agd_opts = dict(max_it=100, ai=1e-1, af=1e-2)
-    lbfgs_opts = dict(max_it=10, lr=1e-1)
-    sqp_opts = dict(max_it=10, reg0=1e-9, ls_pts_nb=1, force_step=True)
-    if method == "agd":
-        minimize_fn, opt_opts = minimize_agd, dict(opt_opts, **agd_opts)
-    elif method == "lbfgs":
-        minimize_fn, opt_opts = minimize_lbfgs, dict(opt_opts, **lbfgs_opts)
-    elif method == "sqp":
-        minimize_fn, opt_opts = minimize_sqp, dict(opt_opts, **sqp_opts)
+    fns = dict(agd=[f_fn, g_fn], lbfgs=[f_fn, g_fn], sqp=[f_fn, g_fn, h_fn])
 
-    gam, gam_hist = minimize_fn(*fns, gam, **opt_opts)
-    gam_hist_losses = [loss_fn(opt_fn(gam), gam) for gam in gam_hist]
+    hist, t_stamp = dict(), time.time()
+    solver, cb_it = None, 0
 
-    gam, gam_hist = t2n(gam), [t2n(gam_) for gam_ in gam_hist]
-    gam_hist_losses = [t2n(loss) for loss in gam_hist_losses]
+    def cb_fn(*args):
+        global solver, hist, t_stamp, cb_it
+        cb_it += 1
+        t_inc = time.time() - t_stamp
+        z = opt_fn(*args)
+        Yp = OPT.pred(z, Zts)
+        acc = (Yp.argmax(-1) == Yts.argmax(-1)).to(Zts.dtype).mean().cpu()
+        tqdm.write("Accuracy: %5.1f%%" % float(1e2 * acc))
+        hist[solver]["loss"].append(float(loss_fn(z, gam)))
+        hist[solver]["acc"].append(float(1e2 * acc))
+        hist[solver]["it"].append(cb_it)
+        hist[solver]["fns"].append(len(f_fn.cache.keys()))
+        hist[solver]["t"].append(t_inc)
+        t_stamp = time.time()
 
-    with gzip.open(OPTHIST_FNAME, "wb") as fp:
-        pickle.dump((gam, gam_hist, gam_hist_losses), fp)
+    agd_opts = dict(max_it=100, ai=1e-1, af=1e-2, callback_fn=cb_fn)
+    lbfgs_opts = dict(max_it=10, lr=1e-1, callback_fn=cb_fn)
+    sqp_opts = dict(
+        max_it=10, reg0=1e-9, ls_pts_nb=1, force_step=True, callback_fn=cb_fn
+    )
+
+    minimize_fn = dict(agd=minimize_agd, lbfgs=minimize_lbfgs, sqp=minimize_sqp)
+    opts_map = dict(agd=agd_opts, lbfgs=lbfgs_opts, sqp=sqp_opts)
+
+    # LP = lp.LineProfiler()
+    # LP.add_function(h_fn.fn)
+    # LP.add_function(implicit_hessian)
+    # LP.add_function(Hz_fn)
+    # h_fn_ = LP.wrap_function(h_fn)
+
+    for solver in ["sqp", "lbfgs", "agd"]:
+        keys = copy(list(f_fn.cache.keys()))
+        assert (
+            len(f_fn.cache.keys())
+            == len(g_fn.cache.keys())
+            == len(h_fn.cache.keys())
+        )
+        for k in keys:
+            del f_fn.cache[k]
+        assert len(f_fn.cache.keys()) == 0
+        assert len(g_fn.cache.keys()) == 0
+        assert len(h_fn.cache.keys()) == 0
+        hist[solver] = dict(acc=[], fns=[], it=[], t=[], loss=[])
+        opt_opts_ = dict(opt_opts, **opts_map[solver])
+        _, gam_hist = minimize_fn[solver](*fns[solver], gam, **opt_opts_)
+        t = time.time()
+        # gam_hist_losses = [loss_fn(opt_fn(gam), gam) for gam in gam_hist]
+        gam_hist_losses = [f_fn(gam) for gam in gam_hist]
+        print("loss eval takes %9.4e" % (time.time() - t))
+
+        gam_hist = [t2n(gam_) for gam_ in gam_hist]
+        gam_hist_losses = [t2n(loss) for loss in gam_hist_losses]
+
+        hist[solver]["gam"] = t2n(gam)
+        hist[solver]["gam_hist"] = gam_hist
+        hist[solver]["gam_hist_losses"] = gam_hist_losses
+
+    with gzip.open("data/opt_hist.pkl.gz", "wb") as fp:
+        pickle.dump(hist, fp)
 
 # scan through gamma values #######################################
 if "scan" in actions:
@@ -365,12 +421,12 @@ if "visualize" in actions:
     gams = np.array(gams)
     plt.plot(gams, losses, color="C0")
     grads = np.diff(losses) / np.diff(gams)
-    #for (gam, loss, g, g_alt, h) in zip(gams, losses, gs, gs_alt, hs):
+    # for (gam, loss, g, g_alt, h) in zip(gams, losses, gs, gs_alt, hs):
     for (gam, loss, g, h) in zip(gams, losses, gs, hs):
         dgam = 1.5e-1
         grad = np.interp(gam, gams[:-1], grads)
         plt.plot([gam, gam + dgam], [loss, loss + g * dgam], color="C1")
-        #plt.plot([gam, gam + dgam], [loss, loss + g_alt * dgam], color="C2")
+        # plt.plot([gam, gam + dgam], [loss, loss + g_alt * dgam], color="C2")
         # plt.plot([gam, gam + dgam], [loss, loss + grad * dgam], color="C3")
         print(grad / (g / h))
     pdb.set_trace()

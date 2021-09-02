@@ -3,7 +3,7 @@ import unittest, pdb
 import torch
 
 import header
-from implicit import implicit_grads_1st
+from implicit import implicit_jacobian
 import objs
 
 CE = objs.CE()
@@ -23,8 +23,8 @@ class DpzTest(unittest.TestCase):
         optimizations = {
             "Dzk_solve_fn": Dzk_solve_fn,
         }
-        Dpz = implicit_grads_1st(k_fn, W, p, optimizations=optimizations)
-        Dpz2 = implicit_grads_1st(k_fn, W, p)
+        Dpz = implicit_jacobian(k_fn, W, p, optimizations=optimizations)
+        Dpz2 = implicit_jacobian(k_fn, W, p)
         self.assertEqual(Dpz.shape, (W.shape + p.shape))
         self.assertEqual(Dpz2.shape, (W.shape + p.shape))
 
@@ -41,8 +41,8 @@ class DpzTest(unittest.TestCase):
         optimizations = {
             "Dzk_solve_fn": Dzk_solve_fn,
         }
-        Dpz1 = implicit_grads_1st(k_fn, W, p, optimizations=optimizations)
-        Dpz2 = implicit_grads_1st(
+        Dpz1 = implicit_jacobian(k_fn, W, p, optimizations=optimizations)
+        Dpz2 = implicit_jacobian(
             k_fn, W, p, jvp_vec=jvp_vec, optimizations=optimizations
         )
         self.assertEqual(Dpz2.shape, W.shape)
@@ -56,8 +56,8 @@ class DpzTest(unittest.TestCase):
     def test_shape_jvp_without_Dzk_solve(self):
         k_fn = lambda W, p: CE.grad(W, X @ p, Y, lam)
         jvp_vec = torch.randn(p.shape)
-        Dpz1 = implicit_grads_1st(k_fn, W, p)
-        Dpz2 = implicit_grads_1st(k_fn, W, p, jvp_vec=jvp_vec)
+        Dpz1 = implicit_jacobian(k_fn, W, p)
+        Dpz2 = implicit_jacobian(k_fn, W, p, jvp_vec=jvp_vec)
         self.assertEqual(Dpz2.shape, W.shape)
         eps = 1e-5
         err = torch.norm(

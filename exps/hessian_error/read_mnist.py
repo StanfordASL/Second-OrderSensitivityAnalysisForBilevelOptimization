@@ -132,7 +132,7 @@ if __name__ == "__main__":
     key = "Dpz"
     ref = results[it_ref][key]
     vals = odict((k, z[key]) for (k, z) in results.items())
-    loss_fn, scale = pct_diff, "log"
+    loss_fn, scale = cosine_similarity, "log"
     errs = odict((k, float(loss_fn(v, ref).cpu())) for (k, v) in vals.items())
 
     plt.figure()

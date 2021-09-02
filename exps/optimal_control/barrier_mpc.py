@@ -5,7 +5,7 @@ import cvxpy as cp
 
 import header
 from implicit.diff import JACOBIAN, HESSIAN_DIAG
-from implicit import implicit_grads_1st, implicit_grads_2nd, generate_fns
+from implicit import implicit_jacobian, implicit_hessian, generate_fns
 from implicit.opt import minimize_lbfgs, minimize_sqp, minimize_agd
 from implicit.pca import visualize_landscape
 

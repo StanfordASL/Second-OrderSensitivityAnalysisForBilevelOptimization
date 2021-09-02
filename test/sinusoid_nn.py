@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 import include_implicit
 
-from implicit import implicit_grads_1st
+from implicit import implicit_jacobian
 from implicit.diff import grad, JACOBIAN, HESSIAN_DIAG, torch_grad
 from implicit.opt import minimize_agd
 from implicit.nn_tools import nn_all_params, nn_structure, nn_forward
@@ -123,7 +123,7 @@ def main(mode):
 
         pdb.set_trace()
 
-        Dpz = implicit_grads_1st(k_fn, z, lam)
+        Dpz = implicit_jacobian(k_fn, z, lam)
 
         # pdb.set_trace()
     elif mode == "eval_slurm":
@@ -159,7 +159,7 @@ def main(mode):
                 # Dzk = torch_grad(lambda z: k_fn(z, lam), verbose=True)(z)
 
                 results_dpz[it]["Dzk"] = Dzk.cpu().detach().numpy()
-                Dpz = implicit_grads_1st(k_fn, z, lam, Dzk=Dzk)
+                Dpz = implicit_jacobian(k_fn, z, lam, Dzk=Dzk)
                 results_dpz[it]["Dpz"] = Dpz.cpu().detach().numpy()
                 with gzip.open(fname % idx, "wb") as fp:
                     pickle.dump(results_dpz, fp)

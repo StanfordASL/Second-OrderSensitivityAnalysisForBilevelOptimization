@@ -133,3 +133,6 @@ old/
 *.txt
 **/data/*
 **/runs/*
+.idea
+
+*.png

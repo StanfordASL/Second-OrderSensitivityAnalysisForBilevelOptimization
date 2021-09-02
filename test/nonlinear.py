@@ -9,7 +9,7 @@ from implicit.utils import t, diag, topts, fn_with_sol_cache
 import implicit.plot_utils as pu
 from implicit.opt import minimize_sqp, minimize_agd, minimize_lbfgs
 
-from implicit import implicit_grads_1st, implicit_grads_2nd, generate_fns
+from implicit import implicit_jacobian, implicit_hessian, generate_fns
 from implicit import JACOBIAN, HESSIAN
 
 torch.set_default_dtype(torch.float64)
@@ -70,7 +70,7 @@ if __name__ == "__main__":
 
     Dpz = JACOBIAN(lambda lam: F_fn(Ztr, Ytr, lam), lam)
     Dppz = HESSIAN(lambda lam: F_fn(Ztr, Ytr, lam), lam)
-    ret = implicit_grads_2nd(lambda th, lam: k_fn(th, Ztr, Ytr, lam), th, lam)
+    ret = implicit_hessian(lambda th, lam: k_fn(th, Ztr, Ytr, lam), th, lam)
 
     assert torch.norm(Dpz - ret[0]) / torch.norm(Dpz) < 1e-9
     assert torch.norm(Dppz - ret[1]) / torch.norm(Dppz) < 1e-9
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     opt_fn_ = lambda lam: F_fn(Ztr, Ytr, lam)
     k_fn_ = lambda th, lam: k_fn(th, Ztr, Ytr, lam)
 
-    Dpz = implicit_grads_1st(k_fn_, opt_fn_(lam), lam)
+    Dpz = implicit_jacobian(k_fn_, opt_fn_(lam), lam)
     f_fn, g_fn, h_fn = generate_fns(loss_fn_, opt_fn_, k_fn_)
 
     lam0 = 1e-3 * torch.randn(lam.shape)
