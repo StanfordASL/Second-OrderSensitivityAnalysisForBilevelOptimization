@@ -36,6 +36,7 @@ def init(device=None, dtype=None, seed=None):
     # binding main derivatives and jit
     jaxm = jnp
     jaxm.grad, jaxm.jacobian = jax.grad, jax.jacobian
+    jaxm.jvp, jaxm.vjp= jax.jvp, jax.vjp
     jaxm.hessian = jax.hessian
     jaxm.jit = jax.jit
 

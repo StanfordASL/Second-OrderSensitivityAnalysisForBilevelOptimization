@@ -25,9 +25,10 @@ def linear(input, *args, **kwargs):
 
 
 def conv(input, *args, **kwargs):
+    C, C0 = args
     return (
-        jaxm.lax.conv(input, args[0], kwargs["stride"], "VALID")
-        + args[1][..., None, None]
+        jaxm.lax.conv(input, C, kwargs["stride"], "VALID")
+        + C0[..., None, None]
     )
 
 

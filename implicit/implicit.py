@@ -118,14 +118,8 @@ def implicit_jacobian(
             ##$
     else:
         if jvp_vec is not None:
-            for param in params:
-                param.requires_grad = True
-            # TODO
-            f_ = k_fn(z.detach(), *params)
-            Dp = [
-                fwd_grad(f_, param, grad_inputs=jvp_vec)
-                for (param, jvp_vec) in zip(params, jvp_vec)
-            ]
+            fn = lambda *params: k_fn(z, *params)
+            Dp = ensure_list(jaxm.jvp(fn, params, tuple(jvp_vec))[1])
             Dp = [Dp.reshape((zlen, 1)) for (Dp, plen) in zip(Dp, plen)]
             Dpk = Dp
         else:
@@ -190,15 +184,13 @@ def implicit_hessian(
         # compute the left hand vector in the VJP
         Dzk_solve_fn = optimizations["Dzk_solve_fn"]
         v = -Dzk_solve_fn(z, *params, rhs=Dg_.reshape((zlen, 1)), T=True)
-        fn = lambda z, *params: jaxm.sum(
-            v.reshape(zlen) * k_fn(z, *params).reshape(zlen)
+        fn = jaxm.jit(
+            lambda z, *params: jaxm.sum(
+                v.reshape(zlen) * k_fn(z, *params).reshape(zlen)
+            )
         )
 
         if jvp_vec is not None:
-            for param in params:
-                param.requires_grad = True
-            z.requires_grad = True
-
             Dpz_jvp = ensure_list(
                 implicit_jacobian(
                     k_fn,
@@ -213,11 +205,16 @@ def implicit_hessian(
             # compute the 2nd order derivatives consisting of 4 terms
             # term 1 ##############################
             # Dpp1 = HESSIAN_DIAG(lambda *params: fn(z, *params), *params)
-            g_ = grad(fn(z, *params), params, create_graph=True)
-            Dpp1 = [
-                fwd_grad(g_, param, grad_inputs=jvp_vec).reshape(plen)
-                for (g_, param, jvp_vec) in zip(g_, params, jvp_vec)
-            ]
+            # g_ = grad(fn(z, *params), params, create_graph=True)
+            # Dpp1 = [
+            #    fwd_grad(g_, param, grad_inputs=jvp_vec).reshape(plen)
+            #    for (g_, param, jvp_vec) in zip(g_, params, jvp_vec)
+            # ]
+            dfn_params = jaxm.grad(
+                lambda *params: fn(z, *params), argnums=range(len(params))
+            )
+            Dpp1 = ensure_list(jaxm.jvp(dfn_params, params, tuple(jvp_vec))[1])
+            Dpp1 = [Dpp1.reshape(plen) for (Dpp1, plen) in zip(Dpp1, plen)]
 
             # term 2 ##############################
             # temp = JACOBIAN(
@@ -234,21 +231,36 @@ def implicit_hessian(
             #    (temp @ Dpz).reshape((plen, plen))
             #    for (temp, Dpz, plen) in zip(temp, Dpz, plen)
             # ]
-            g_ = grad(fn(z, *params), params, create_graph=True)
+            # g_ = grad(fn(z, *params), params, create_graph=True)
+            # Dpp2 = [
+            #    fwd_grad(g_, z, grad_inputs=Dpz_jvp.reshape(z.shape)).reshape(
+            #        -1
+            #    )
+            #    for (g_, Dpz_jvp) in zip(g_, Dpz_jvp)
+            # ]
             Dpp2 = [
-                fwd_grad(g_, z, grad_inputs=Dpz_jvp.reshape(z.shape)).reshape(
-                    -1
-                )
-                for (g_, Dpz_jvp) in zip(g_, Dpz_jvp)
+                jaxm.jvp(
+                    lambda z: jaxm.grad(fn, argnums=i + 1)(z, *params),
+                    (z,),
+                    (Dpz_jvp.reshape(z.shape),),
+                )[1].reshape(plen)
+                for (i, (Dpz_jvp, plen)) in enumerate(zip(Dpz_jvp, plen))
             ]
 
             # term 3 ##############################
             # Dpp3 = [jaxm.t(Dpp2) for Dpp2 in Dpp2]
-            g_ = grad(fn(z, *params), z, create_graph=True)
-            g_ = [
-                fwd_grad(g_, param, grad_inputs=jvp_vec)
-                for (param, jvp_vec) in zip(params, jvp_vec)
-            ]
+            # g_ = grad(fn(z, *params), z, create_graph=True)
+            # g_ = [
+            #    fwd_grad(g_, param, grad_inputs=jvp_vec)
+            #    for (param, jvp_vec) in zip(params, jvp_vec)
+            # ]
+            g_ = ensure_list(
+                jaxm.jvp(
+                    lambda *params: jaxm.grad(fn)(z, *params),
+                    params,
+                    tuple(jvp_vec),
+                )[1]
+            )
             Dpp3 = [
                 ensure_list(
                     implicit_jacobian(
@@ -268,10 +280,19 @@ def implicit_hessian(
             #    Dpp4 = [jaxm.t(Dpz) @ (Hg_ + Dzz) @ Dpz for Dpz in Dpz]
             # else:
             #    Dpp4 = [jaxm.t(Dpz) @ Dzz @ Dpz for Dpz in Dpz]
-            g_ = grad(fn(z, *params), z, create_graph=True)
+
+            # g_ = grad(fn(z, *params), z, create_graph=True)
+            # g_ = [
+            #    fwd_grad(g_, z, grad_inputs=Dpz_jvp.reshape(z.shape))
+            #    for Dpz_jvp in Dpz_jvp
+            # ]
             g_ = [
-                fwd_grad(g_, z, grad_inputs=Dpz_jvp.reshape(z.shape))
-                for Dpz_jvp in Dpz_jvp
+                jaxm.jvp(
+                    lambda z: jaxm.grad(fn)(z, *params),
+                    (z,),
+                    (Dpz_jvp.reshape(z.shape),),
+                )[1]
+                for (i, Dpz_jvp) in enumerate(Dpz_jvp)
             ]
             if Hg is not None:
                 g_ = [

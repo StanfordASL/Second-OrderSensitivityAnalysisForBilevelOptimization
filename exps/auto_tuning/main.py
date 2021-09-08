@@ -15,7 +15,8 @@ import implicit.utils as utl
 
 from implicit import implicit_jacobian, implicit_hessian
 from implicit import generate_fns
-import mnist
+#import mnist
+import fashion as mnist
 
 from objs import LS, OPT_with_centers, CE, OPT_with_diag, OPT_conv
 from objs import OPT_conv_poly, poly_feat

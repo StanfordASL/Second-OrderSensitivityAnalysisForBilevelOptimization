@@ -32,6 +32,7 @@ def minimize_agd(
 ):
     assert len(args) > 0
     assert g_fn is not None
+    use_tqdm = use_tqdm and verbose
 
     if callback_fn is not None:
         callback_fn(*args)
@@ -119,6 +120,7 @@ def minimize_lbfgs(
 ):
     assert len(args) > 0
     assert g_fn is not None
+    use_tqdm = use_tqdm and verbose
 
     if callback_fn is not None:
         callback_fn(*[t2j(arg) for arg in args])
@@ -272,6 +274,7 @@ def minimize_sqp(
     use_writer=False,
     use_tqdm=True,
 ):
+    use_tqdm = use_tqdm and verbose
     if len(args) > 1:
         raise ValueError("SQP only only supports single variable functions")
     x = args[0]
