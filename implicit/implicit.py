@@ -184,11 +184,9 @@ def implicit_hessian(
         # compute the left hand vector in the VJP
         Dzk_solve_fn = optimizations["Dzk_solve_fn"]
         v = -Dzk_solve_fn(z, *params, rhs=Dg_.reshape((zlen, 1)), T=True)
-        fn = jaxm.jit(
-            lambda z, *params: jaxm.sum(
+        fn = lambda z, *params: jaxm.sum(
                 v.reshape(zlen) * k_fn(z, *params).reshape(zlen)
             )
-        )
 
         if jvp_vec is not None:
             Dpz_jvp = ensure_list(

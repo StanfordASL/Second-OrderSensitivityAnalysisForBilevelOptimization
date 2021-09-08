@@ -177,6 +177,40 @@ class OPT_with_centers:
         return self.OPT.Dzk_solve(W, Za, Y, lam, rhs, T=T)
 
 
+class LS_with_diag(OBJ):
+    def __init__(self):
+        pass
+
+    def get_params(self, param):
+        return jaxm.clip(param, -5, 5)
+
+    def pred(self, W, Z, param):
+        return Z @ W
+
+    def solve(self, Z, Y, param):
+        lam_diag = self.get_params(param)
+        n = Z.shape[-2]
+        L = lam_diag.reshape((Z.shape[-1], Y.shape[-1]))
+        ws = [None for i in range(Y.shape[-1])]
+        A_base = jaxm.t(Z) @ Z / n
+        for i in range(Y.shape[-1]):
+            A = A_base + jaxm.diag(10.0 ** L[:, i])
+            #ws[i] = jaxm.linalg.cholesky_solve(
+            #        jaxm.linalg.cholesky(A), jaxm.t(Z) @ Y[:, i] / n
+            #    )
+            ws[i] = jaxm.linalg.solve(A, jaxm.t(Z) @ Y[:, i] / n)
+        ret = jaxm.stack(ws, -1)
+        return ret
+
+    def fval(self, W, Z, Y, param):
+        lam_diag = self.get_params(param)
+        n = Z.shape[-2]
+        return (
+            jaxm.sum((Z @ W - Y) ** 2) / n
+            + jaxm.sum((10.0 ** lam_diag.reshape(W.shape)) * (W ** 2))
+        ) / 2
+
+
 class OPT_with_diag(OBJ):
     def __init__(self, OPT):
         self.OPT = OPT
