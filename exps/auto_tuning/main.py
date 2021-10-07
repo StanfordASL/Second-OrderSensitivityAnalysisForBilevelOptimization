@@ -160,7 +160,6 @@ def main(config):
 
     W = opt_fn_(param)
     k = k_fn_(W, param)
-    pdb.set_trace()
 
     # Dpz = implicit_jacobian(k_fn_, W, param, Dzk_solve_fn=Dzk_solve_)
     optimizations = dict(Dzk_solve_fn=Dzk_solve_)
@@ -193,6 +192,7 @@ def main(config):
         loss_ts = float(loss_fn(Yp_ts, Yts, param))
         acc_ts = float(acc_fn(Yp_ts, Yts))
         PRINT_FN("Accuracy: %5.2f%%" % acc_ts)
+        print("Hello")
         idx = len(f_fn.cache.keys())  # function evaluations so far
         hist["loss_ts"][idx] = loss_ts
         hist["acc_ts"][idx] = acc_ts
@@ -205,7 +205,7 @@ def main(config):
     )
     opt_fns = [f_fn, g_fn, h_fn] if config["solver"] == "sqp" else [f_fn, g_fn]
     if config["solver"] == "sqp":
-        param, param_hist = minimize_sqp(*opt_fns, param, reg0=1e-3, **oopt)
+        param, param_hist = minimize_sqp(*opt_fns, param, reg0=1e-9, **oopt)
     elif config["solver"] == "ipopt":
         param = minimize_ipopt(*opt_fns, param, **oopt)
     elif config["solver"] == "lbfgs":
@@ -290,9 +290,10 @@ if __name__ == "__main__":
         )
         print("#" * 80)
         pprint(config)
-        param, results, H_hist, hist = LINE_PROFILER.wrap_function(
-            lambda: main(config)
-        )()
+        #param, results, H_hist, hist = LINE_PROFILER.wrap_function(
+        #    lambda: main(config)
+        #)()
+        main(config)
         all_results[setting] = dict(results=results, hist=hist)
     #with gzip.open("data/all_results_%03d.pkl.gz" % idx_job, "wb") as fp:
     #    pickle.dump(all_results, fp)

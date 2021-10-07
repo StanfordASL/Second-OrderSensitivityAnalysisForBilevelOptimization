@@ -136,3 +136,5 @@ old/
 .idea
 
 *.png
+
+.vscode

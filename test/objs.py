@@ -255,16 +255,17 @@ class OPT_with_diag:
         g_fn = lambda W: self.grad(W, Z, Y, param)
         h_fn = lambda W: self.hess(W, Z, Y, param)
         W = self.OPT.solve(Z, Y, lam)
-        ret = minimize_sqp(
-            f_fn,
-            g_fn,
-            h_fn,
-            W,
-            verbose=True,
-            max_it=100,
-            reg0=1e-9,
-            force_step=True,
-        )
+        ret = minimize_lbfgs(f_fn, g_fn, W, verbose=False, max_it=50, lr=1e-1)
+        #ret = minimize_sqp(
+        #    f_fn,
+        #    g_fn,
+        #    h_fn,
+        #    W,
+        #    verbose=True,
+        #    max_it=100,
+        #    reg0=1e-9,
+        #    force_step=True,
+        #)
         return ret
         # return self.OPT.solve(Z, Y, lam)
 

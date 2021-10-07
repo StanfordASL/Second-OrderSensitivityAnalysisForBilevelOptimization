@@ -300,6 +300,7 @@ def minimize_sqp(
     f_hist, x_hist = [f_best], [x.detach().clone()]
 
     if callback_fn is not None:
+        pdb.set_trace()
         callback_fn(x)
 
     t__ = utl.time()
