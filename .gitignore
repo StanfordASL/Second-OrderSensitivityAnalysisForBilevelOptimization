@@ -137,3 +137,5 @@ old/
 test/fashion
 
 *.png
+
+.vscode

@@ -20,7 +20,6 @@ if "loss" in ACTIONS and __name__ == "__main__":
     with gzip.open("data/losses.pkl.gz", "rb") as fp:
         x, y, _, _ = pickle.load(fp)
     # x, y = x[1:-1], np.diff(y, n=2)
-    plt.plot(10.0 ** x, y)
 
     # plt.scatter(x, y)
     # plt.xlim([1e-8, 1e-6])

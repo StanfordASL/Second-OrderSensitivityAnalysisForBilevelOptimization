@@ -142,12 +142,11 @@ def to_tuple(*args):
     return tuple(to_tuple_(arg) for arg in args)
 
 
-def fn_with_sol_cache(fwd_fn, cache=None):
+def fn_with_sol_cache(fwd_fn, cache=None, jit=True):
     def inner_decorator(fn):
         nonlocal cache
         cache = cache if cache is None else cache
-
-        fwd_fn_ = jaxm.jit(fwd_fn)
+        fwd_fn_ = fwd_fn  # assume already jit-ed
 
         def fn_with_sol(*args, **kwargs):
             cache, sol_key = fn_with_sol.cache, to_tuple(*args)
@@ -157,7 +156,7 @@ def fn_with_sol_cache(fwd_fn, cache=None):
             return ret
 
         fn_with_sol.cache = cache
-        fn_with_sol.fn = jaxm.jit(fn)
+        fn_with_sol.fn = jaxm.jit(fn) if jit else fn
         return fn_with_sol
 
     return inner_decorator

@@ -185,8 +185,8 @@ def implicit_hessian(
         Dzk_solve_fn = optimizations["Dzk_solve_fn"]
         v = -Dzk_solve_fn(z, *params, rhs=Dg_.reshape((zlen, 1)), T=True)
         fn = lambda z, *params: jaxm.sum(
-                v.reshape(zlen) * k_fn(z, *params).reshape(zlen)
-            )
+            v.reshape(zlen) * k_fn(z, *params).reshape(zlen)
+        )
 
         if jvp_vec is not None:
             Dpz_jvp = ensure_list(
@@ -485,33 +485,33 @@ def detach_args(*args):
 
 
 def generate_fns(
-    loss_fn, opt_fn, k_fn, normalize_grad=False, optimizations: Mapping = {}
+    loss_fn,
+    opt_fn,
+    k_fn,
+    normalize_grad=False,
+    optimizations: Mapping = {},
+    jit=True,
 ):
     sol_cache = dict()
-    opt_fn_ = lambda *args, **kwargs: opt_fn(*args, **kwargs)
     optimizations = {k: v for (k, v) in optimizations.items()}
 
-    @fn_with_sol_cache(opt_fn_, sol_cache)
+    @fn_with_sol_cache(opt_fn, sol_cache, jit=jit)
     def f_fn(z, *params):
         return loss_fn(z, *params)
 
-    @fn_with_sol_cache(opt_fn_, sol_cache)
+    @fn_with_sol_cache(opt_fn, sol_cache, jit=jit)
     def g_fn(z, *params):
         g = JACOBIAN(loss_fn, argnums=range(len(params) + 1))(z, *params)
         Dp = implicit_jacobian(
             k_fn, z, *params, Dg=g[0], optimizations=optimizations
         )
         Dp = Dp if len(params) != 1 else [Dp]
-        # opts = dict(device=z.device, dtype=z.dtype)
-        # Dp = [
-        #    jaxm.zeros(param.shape, **opts) for param in params
-        # ]
         ret = [Dp + g for (Dp, g) in zip(Dp, g[1:])]
         if normalize_grad:
             ret = [(z / (jaxm.norm(z) + 1e-7)) for z in ret]
         return ret[0] if len(ret) == 1 else ret
 
-    @fn_with_sol_cache(opt_fn_, sol_cache)
+    @fn_with_sol_cache(opt_fn, sol_cache, jit=jit)
     def h_fn(z, *params):
         g = JACOBIAN(loss_fn, argnums=range(len(params) + 1))(z, *params)
 

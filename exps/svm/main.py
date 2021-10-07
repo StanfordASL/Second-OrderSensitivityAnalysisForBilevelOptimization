@@ -2,33 +2,29 @@ import os, sys, pdb, time, gzip, pickle
 from collections import OrderedDict as odict
 from copy import copy
 
-import torch
-
-DEVICE, DTYPE = "cpu", torch.float64
-
-import cvxpy as cp, numpy as np
+import torch, osqp
+import cvxpy as cp, numpy as np, matplotlib.pyplot as plt, line_profiler as lp
 import scipy.sparse as sp, scipy.sparse.linalg as spla
-import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from tqdm import tqdm
-import line_profiler as lp
-
-import osqp
 
 import header
 
+from implicit.interface import init
+
+jaxm = init(dtype=np.float64, device="cpu")
+# jaxm = init(dtype=np.float32, device="cuda")
 from implicit.opt import minimize_lbfgs, minimize_sqp, minimize_agd
-from implicit import implicit_jacobian, implicit_hessian, generate_fns
-from implicit.diff import JACOBIAN, HESSIAN_DIAG, torch_grad as grad
+from implicit.implicit import implicit_jacobian, implicit_hessian, generate_fns
+from implicit.diff import JACOBIAN, HESSIAN_DIAG
 from implicit.pca import visualize_landscape
+from implicit.utils import n2j, j2n
 
 from objs import LS, CE
-import mnist
 
-t2n = lambda x: np.copy(x.detach().cpu().clone().numpy().astype(np.float64))
-n2t = lambda x, device=None, dtype=None: torch.as_tensor(
-    x, device=device, dtype=dtype
-)
+import mnist
+#import fashion as mnist
+from utils import scale_down
 
 spfmt = "csc"
 sphcat = lambda xs: sp.hstack(xs, format=spfmt)
@@ -45,22 +41,19 @@ class MSVM:
         self.k, self.e = k, e
 
     def _split_W(self, V):
-        W = V[: self.e * self.k].reshape((self.k, self.e)).transpose(-2, -1)
+        W = jaxm.t(V[: self.e * self.k].reshape((self.k, self.e)))
         return W
 
     def _split_vars(self, V, n):
-        assert V.numel() == self.k * self.e + 2 * n + n * self.k
-        # W = V[: self.e * self.k].reshape((self.k, self.e)).transpose(-2, -1)
+        assert V.size == self.k * self.e + 2 * n + n * self.k
         W = self._split_W(V)
-        Zet = V[W.numel() : W.numel() + n]
-        Lam = V[
-            W.numel() + Zet.numel() : W.numel() + Zet.numel() + self.k * n + n
-        ]
+        Zet = V[W.size : W.size + n]
+        Lam = V[W.size + Zet.size : W.size + Zet.size + self.k * n + n]
         return W, Zet, Lam
 
     def pred(self, V, Z, *params):
         assert Z.ndim == 2
-        W = V[: self.e * self.k].reshape((self.k, self.e)).transpose(-2, -1)
+        W = jaxm.t(V[: self.e * self.k].reshape((self.k, self.e)))
         return Z @ W
 
     def _generate_problem_data(self, Z, Y, *params):
@@ -68,42 +61,37 @@ class MSVM:
         (gam,) = params
         (n, e), k = Z.shape, Y.shape[-1]
         assert self.k == k and self.e == e
-        opts = dict(device=Z.device, dtype=Z.dtype)
 
-        A1 = torch.kron(torch.eye(k, **opts), Z)
+        A1 = jaxm.kron(jaxm.eye(k), Z)
         A2 = (
             (Y[..., None] * Z[..., None, :])
             .reshape((Y.shape[0], -1))
             .tile((k, 1))
         )
 
-        A1_ = spmat(t2n(A1))
-        A2_ = spmat(t2n(A2))
-        Aa_ = sphcat([A1_ - A2_, -spkron(np.ones((k, 1)), speye(n))])
-        Ab_ = sphcat([spzeros(n, e * k), -sp.eye(n)])
-        A_ = spvcat([Aa_, Ab_])
+        # A1_ = spmat(j2n(A1))
+        # A2_ = spmat(j2n(A2))
+        # Aa_ = sphcat([A1_ - A2_, -spkron(np.ones((k, 1)), speye(n))])
+        # Ab_ = sphcat([spzeros(n, e * k), -sp.eye(n)])
+        # A_ = spvcat([Aa_, Ab_])
 
-        P_ = spdiags(np.concatenate([np.ones(k * e), 0.0 * np.ones(n)]))
+        Aa = jaxm.hstack([A1 - A2, -jaxm.kron(jaxm.ones((k, 1)), jaxm.eye(n))])
+        Ab = jaxm.hstack([jaxm.zeros((n, e * k)), -jaxm.eye(n)])
+        A_ = jaxm.vstack([Aa, Ab])
 
-        D = (
-            (Y[None, ...].argmax(-1) == torch.arange(k, **opts)[..., None])
-            .reshape(-1)
-            .to(Z.dtype)
-        )
-        # b_ = np.concatenate([t2n(D) - 1.0, np.zeros(n)])
-        # q_ = np.concatenate([np.zeros(k * e), gam * np.ones(n)])
-        b = torch.cat([D - 1.0, torch.zeros(n, **opts)])
-        q = torch.cat(
-            [torch.zeros(k * e, **opts), (10.0 ** gam) * torch.ones(n, **opts)]
-            # [torch.zeros(k * e, **opts), gam.abs() * torch.ones(n, **opts)]
-            # [torch.zeros(k * e, **opts), gam * torch.ones(n, **opts)]
-        )
+        # P_ = spdiags(np.concatenate([np.ones(k * e), 0.0 * np.ones(n)]))
+        P_ = jaxm.diag(jaxm.cat([jaxm.ones(k * e), 0.0 * jaxm.ones(n)]))
+
+        D = (Y[None, ...].argmax(-1) == jaxm.arange(k)[..., None]).reshape(-1)
+        b = jaxm.cat([D - 1.0, jaxm.zeros(n)])
+        q = jaxm.cat([jaxm.zeros(k * e), (10.0 ** gam) * jaxm.ones(n)])
 
         return P_, q, A_, b
 
     def solve(self, Z, Y, *params, method="cvx", verbose=False):
         P, q, A, b = self._generate_problem_data(Z, Y, *params)
-        q, b = t2n(q), t2n(b)
+        P, A, q, b = j2n(P), j2n(A), j2n(q), j2n(b)
+        P, A = spmat(P), spmat(A)
         if method == "cvx":
             x = cp.Variable(A.shape[-1])
             obj = cp.Minimize(0.5 * cp.sum(cp.quad_form(x, P)) + q @ x)
@@ -121,114 +109,109 @@ class MSVM:
             results = m.solve()
             assert results.info.status == "solved"
             x, lam = results.x, results.y
-        return n2t(np.concatenate([x, lam]), device=Z.device, dtype=Z.dtype)
+        return n2j(np.concatenate([x, lam]))
 
     def grad(self, V, Z, Y, *params):
         assert Z.ndim == 2 and Y.ndim == 2
-        opts = dict(device=Z.device, dtype=Z.dtype)
         P, q, A, b = self._generate_problem_data(Z, Y, *params)
         n = Z.shape[-2]
 
-        x, lam = t2n(V[: self.k * self.e + n]), t2n(V[self.k * self.e + n :])
-        dL = n2t(P @ x, **opts) + q + n2t(A.T @ lam, **opts)
-        cstr = n2t(lam * (A @ x), **opts) - n2t(lam, **opts) * b
+        x, lam = V[: self.k * self.e + n], V[self.k * self.e + n :]
+        dL = P @ x + q + jaxm.t(A) @ lam
+        cstr = lam * (A @ x) - lam * b
 
-        # x, lam = V[: self.k * self.e + n], V[self.k * self.e + n :]
-        # P, A = n2t(P.toarray(), **opts), n2t(A.toarray(), **opts)
-        # dL = P @ x + q + A.T @ lam
-        # cstr = lam * (A @ x) - lam * b
-
-        return torch.cat([dL, cstr])
+        return jaxm.cat([dL, cstr])
 
     def hess(self, V, Z, Y, *params):
         P, q, A, b = self._generate_problem_data(Z, Y, *params)
-        q, b = t2n(q), t2n(b)
+        # q, b = j2n(q), j2n(b)
         n = Z.shape[-2]
-        x, lam = t2n(V[: self.k * self.e + n]), t2n(V[self.k * self.e + n :])
-        K11, K12 = P, A.T
-        K21 = spdiags(lam) @ A
-        K22 = spdiags(A @ x - b)
-        K = sphcat([spvcat([K11, K21]), spvcat([K12, K22])])
+        # x, lam = j2n(V[: self.k * self.e + n]), j2n(V[self.k * self.e + n :])
+        x, lam = V[: self.k * self.e + n], V[self.k * self.e + n :]
+        # K11, K12 = P, A.T
+        # K21 = spdiags(lam) @ A
+        # K22 = spdiags(A @ x - b)
+        # K = sphcat([spvcat([K11, K21]), spvcat([K12, K22])])
+        K11, K12 = P, jaxm.t(A)
+        K21 = lam.reshape((-1, 1)) * A
+        K22 = jaxm.diag(A @ x - b)
+        K = jaxm.hstack([jaxm.vstack([K11, K21]), jaxm.vstack([K12, K22])])
         return K
 
-    def Dzk_solve(self, V, Z, Y, *params, rhs=None, T=False, diag_reg=1e-12):
+    def Dzk_solve(self, V, Z, Y, *params, rhs=None, T=False, diag_reg=math.nan):
         K = self.hess(V, Z, Y, *params)
         if diag_reg is not None:
-            K = K + diag_reg * speye(K.shape[-1])
-        rhs = t2n(rhs)
-        ret = spla.spsolve(K, rhs) if T == False else spla.spsolve(K.T, rhs)
-        return n2t(ret, device=Z.device, dtype=Z.dtype)
+            if math.isnan(diag_reg):
+                diag_reg = 5 * jaxm.finfo(jaxm.zeros(()).dtype).eps
+            # K = K + diag_reg * speye(K.shape[-1])
+            K = K + diag_reg * jaxm.eye(K.shape[-1])
+        # rhs = j2n(rhs)
+        # ret = spla.spsolve(K, rhs) if T == False else spla.spsolve(K.T, rhs)
+        # return n2j(ret)
+        ret = (
+            jaxm.linalg.solve(K, rhs)
+            if T == False
+            else jaxm.linalg.solve(K.T, rhs)
+        )
+        return ret
 
 
 def loss_fn(V, *params):
     global OPT, Zts, Yts
-    # return torch.nn.CrossEntropyLoss()(OPT.pred(V, Zts), Yts.argmax(-1))
     Yp = OPT.pred(V, Zts)
-    return (
-        -torch.sum(Yts * Yp) + torch.sum(torch.logsumexp(Yp, 1))
-    ) / Zts.shape[-2]
-    # return CE.fval(OPT._split_W(V), Zts, Yts, 0.0)
+    return -jaxm.mean(jaxm.log(jaxm.sum(jaxm.softmax(Yp, -1) * Yts, -1)))
 
 
+@jaxm.jit
 def Hz_fn(V, *params):
-    global OPT, Zts, Yts
-    W = OPT._split_W(V)
+    return jaxm.hessian(loss_fn)(V, *params)
 
-    # loss_ = (
-    #    lambda w: -torch.sum(Yts * torch.softmax(Zts @ w, -1)) / Yts.shape[-2]
-    # )
-    # return torch.autograd.functional.hessian(loss_, W)
+    # global OPT, Zts, Yts
+    # W = OPT._split_W(V)
+    # ret = jaxm.hessian(loss_fn_)(W)
+    # return ret
 
-    Yp_aug = OPT.pred(V, Zts)
-    s = torch.softmax(Yp_aug, -1)
-    Ds = -s[..., :, None] @ s[..., None, :] + torch.diag_embed(s[..., :], 0)
-    H = (
-        torch.einsum(
-            "bijkl,bijkl,bijkl->ijkl",
-            Ds[..., None, :, None, :],
-            Zts[..., :, None, None, None],
-            Zts[..., None, None, :, None],
-        )
-        / Zts.shape[-2]
-    )
-    H = H.transpose(-1, -2)
-    H = H.transpose(1, 0)
-    H = H.reshape((W.numel(), W.numel()))
-    H = torch.block_diag(
-        H,
-        torch.zeros(
-            (V.numel() - W.numel(),) * 2, device=Zts.device, dtype=Zts.dtype
-        ),
-    )
-    return H
 
+#    Yp_aug = OPT.pred(V, Zts)
+#    s = jaxm.softmax(Yp_aug, -1)
+#    Ds = -s[..., :, None] @ s[..., None, :] + jaxm.diag_embed(s[..., :], 0)
+#    H = (
+#        jaxm.einsum(
+#            "bijkl,bijkl,bijkl->ijkl",
+#            Ds[..., None, :, None, :],
+#            Zts[..., :, None, None, None],
+#            Zts[..., None, None, :, None],
+#        )
+#        / Zts.shape[-2]
+#    )
+#    H = jaxm.swapaxes(H, -1, -2)
+#    H = jaxm.swapaxes(H, 1, 0)
+#    H = H.reshape((W.size, W.size))
+#    H = jaxm.scipy.linalg.block_diag(H, jaxm.zeros((V.size - W.size,) * 2))
+#    return H
 
 actions = [z for z in sys.argv[1:]]
-
 
 # prepare data #################################################3
 if __name__ == "__main__":
     global OPT, Zts, Yts
+    dtype = jaxm.zeros(()).dtype
 
-    device, dtype = DEVICE, DTYPE
-    opts = dict(device=device, dtype=dtype)
     Xtr, Ytr = mnist.train["images"], mnist.train["labels"]
     Xts, Yts = mnist.test["images"], mnist.test["labels"]
 
-    r = np.random.randint(Xtr.shape[0], size=(200,))
-    Xtr = n2t(Xtr[r, :], device=device).to(dtype)
-    Ytr = torch.nn.functional.one_hot(
-        n2t(Ytr[r], device=device).to(torch.long), 10
-    ).to(dtype)
+    # r = np.random.randint(Xtr.shape[0], size=(200,))
+    r = np.random.randint(Xtr.shape[0], size=(2000,))
+    Xtr = n2j(Xtr[r, :]).astype(dtype)
+    Ytr = jaxm.nn.one_hot(n2j(Ytr[r]), 10).astype(dtype)
 
-    r = np.random.randint(Xts.shape[0], size=(2000,))
-    Xts = n2t(Xts[r, :], device=device).to(dtype)
-    Yts = torch.nn.functional.one_hot(
-        n2t(Yts[r], device=device).to(torch.long), 10
-    ).to(dtype)
+    r = np.random.randint(Xts.shape[0], size=(4000,))
+    #r = np.arange(Xts.shape[0])
+    Xts = n2j(Xts[r, :]).astype(dtype)
+    Yts = jaxm.nn.one_hot(n2j(Yts[r]), 10).astype(dtype)
 
-    Ztr = torch.cat([Xtr[:, :1] ** 0, Xtr], -1)  # [:, :500]
-    Zts = torch.cat([Xts[:, :1] ** 0, Xts], -1)  # [:, :500]
+    Ztr = jaxm.cat([Xtr[:, :1] ** 0, scale_down(Xtr)], -1)  # [:, :500]
+    Zts = jaxm.cat([Xts[:, :1] ** 0, scale_down(Xts)], -1)  # [:, :500]
 
     OPT = MSVM(k=10, e=Ztr.shape[-1])
 
@@ -238,7 +221,7 @@ OPTHIST_FNAME = "data/opt_hist.pkl.gz"
 
 # prepare the functions ###########################################
 if __name__ == "__main__":
-    gam = torch.as_tensor([-8.0], device=device, dtype=dtype)
+    gam = jaxm.array([-8.0])
     params = (gam,)
     k_fn = lambda z, *params: OPT.grad(z, Ztr, Ytr, *params)
     opt_fn = lambda *params: OPT.solve(Ztr, Ytr, *params, method="cvx")
@@ -247,8 +230,24 @@ if __name__ == "__main__":
     )
     optimizations = dict(Dzk_solve_fn=Dzk_solve, Hz_fn=Hz_fn)
     f_fn, g_fn, h_fn = generate_fns(
-        loss_fn, opt_fn, k_fn, optimizations=optimizations
+        loss_fn, opt_fn, k_fn, optimizations=optimizations, jit=True
     )
+
+    # def main_():
+    #    print(jaxm.sum(f_fn(*params)))
+    #    print(jaxm.sum(g_fn(*params)))
+    #    print(jaxm.sum(h_fn(*params)))
+
+    # main_()
+
+    # LP = lp.LineProfiler()
+    # LP.add_function(f_fn.fn)
+    # LP.add_function(g_fn.fn)
+    # LP.add_function(h_fn.fn)
+    # LP.add_function(main_)
+    # main = LP.wrap_function(main_)
+    # main()
+    # LP.print_stats(output_unit=1e-3)
 
 
 def g_alt_fn(*params):
@@ -256,10 +255,10 @@ def g_alt_fn(*params):
     z = OPT.solve(Ztr, Ytr, *params, method="cvx")
     k = OPT.grad(z, Ztr, Ytr, *params)
     # H_ = grad(lambda z: OPT.grad(z, Ztr, Ytr, *params), verbose=True)(z)
-    H = torch.as_tensor(OPT.hess(z, Ztr, Ytr, *params).toarray(), **opts)
+    H = jaxm.array(OPT.hess(z, Ztr, Ytr, *params).toarray())
     Dg = JACOBIAN(lambda z: loss_fn(z, *params), z)
     J = JACOBIAN(lambda *params: OPT.grad(z, Ztr, Ytr, *params), *params)
-    v = -torch.linalg.solve(H.T, Dg)
+    v = -jaxm.linalg.solve(H.T, Dg)
     g = v @ J
     return g
 
@@ -278,13 +277,13 @@ if "optimize" in actions:
     hist, t_stamp = dict(), time.time()
     solver, cb_it = None, 0
 
-    def cb_fn(*args):
+    def cb_fn(*args, **kwargs):
         global solver, hist, t_stamp, cb_it
         cb_it += 1
         t_inc = time.time() - t_stamp
         z = opt_fn(*args)
         Yp = OPT.pred(z, Zts)
-        acc = (Yp.argmax(-1) == Yts.argmax(-1)).to(Zts.dtype).mean().cpu()
+        acc = jaxm.mean((Yp.argmax(-1) == Yts.argmax(-1)))
         tqdm.write("Accuracy: %5.1f%%" % float(1e2 * acc))
         hist[solver]["loss"].append(float(loss_fn(z, gam)))
         hist[solver]["acc"].append(float(1e2 * acc))
@@ -296,17 +295,11 @@ if "optimize" in actions:
     agd_opts = dict(max_it=100, ai=1e-1, af=1e-2, callback_fn=cb_fn)
     lbfgs_opts = dict(max_it=10, lr=1e-1, callback_fn=cb_fn)
     sqp_opts = dict(
-        max_it=10, reg0=1e-9, ls_pts_nb=1, force_step=True, callback_fn=cb_fn
+        max_it=10, reg0=1e-7, ls_pts_nb=1, force_step=True, callback_fn=cb_fn
     )
 
     minimize_fn = dict(agd=minimize_agd, lbfgs=minimize_lbfgs, sqp=minimize_sqp)
     opts_map = dict(agd=agd_opts, lbfgs=lbfgs_opts, sqp=sqp_opts)
-
-    # LP = lp.LineProfiler()
-    # LP.add_function(h_fn.fn)
-    # LP.add_function(implicit_hessian)
-    # LP.add_function(Hz_fn)
-    # h_fn_ = LP.wrap_function(h_fn)
 
     for solver in ["sqp", "lbfgs", "agd"]:
         keys = copy(list(f_fn.cache.keys()))
@@ -328,10 +321,10 @@ if "optimize" in actions:
         gam_hist_losses = [f_fn(gam) for gam in gam_hist]
         print("loss eval takes %9.4e" % (time.time() - t))
 
-        gam_hist = [t2n(gam_) for gam_ in gam_hist]
-        gam_hist_losses = [t2n(loss) for loss in gam_hist_losses]
+        gam_hist = [j2n(gam_) for gam_ in gam_hist]
+        gam_hist_losses = [j2n(loss) for loss in gam_hist_losses]
 
-        hist[solver]["gam"] = t2n(gam)
+        hist[solver]["gam"] = j2n(gam)
         hist[solver]["gam_hist"] = gam_hist
         hist[solver]["gam_hist_losses"] = gam_hist_losses
 
@@ -340,47 +333,56 @@ if "optimize" in actions:
 
 # scan through gamma values #######################################
 if "scan" in actions:
-    gams, losses, gs, hs = torch.linspace(-9, 1, 100, **opts), [], [], []
-    gs_alt = []
+    compute_grads = True
+    gams, losses, gs, hs, accs = jaxm.linspace(-9, 1, 100), [], [], [], []
     for gam in tqdm(gams):
         V = OPT.solve(Ztr, Ytr, gam, method="cvx")
-        losses.append(float(t2n(loss_fn(V, gam))))
-        gs.append(g_fn(gam))
-        # gs_alt.append(g_alt_fn(gam))
-        hs.append(h_fn(gam))
-        tqdm.write(
-            "(%9.4e, %9.4e, %9.4e, %9.4e -> %9.4e)"
-            % (float(gam), losses[-1], gs[-1], hs[-1], gs[-1] / hs[-1])
-        )
-    losses, gs, hs = [torch.as_tensor(z, **opts) for z in [losses, gs, hs]]
-    gams, losses, gs, hs = [np.array(t2n(z)) for z in [gams, losses, gs, hs]]
-
-    # gs_alt = torch.as_tensor(gs_alt, **opts)
-    # gs_alt = np.array(t2n(gs_alt))
-
-    # with gzip.open(LOSSES_FNAME, "wb") as fp:
-    #    pickle.dump((gams, losses, gs, hs), fp)
-
-    with gzip.open(LOSSES_FNAME + "2", "wb") as fp:
-        pickle.dump((gams, losses, gs, gs_alt, hs), fp)
+        losses.append(j2n(loss_fn(V, gam)))
+        Yp = OPT.pred(V, Zts)
+        acc = jaxm.mean((jaxm.argmax(Yp, -1) == jaxm.argmax(Yts, -1)))
+        accs.append(j2n(acc))
+        if compute_grads:
+            gs.append(j2n(g_fn(gam)))
+            hs.append(j2n(h_fn(gam)))
+            tqdm.write(
+                "(%9.4e, %9.4e, %9.4e, %9.4e, %6.2f"
+                % (gam, losses[-1], gs[-1], hs[-1], 1e2 * accs[-1])
+            )
+        else:
+            tqdm.write(
+                "(%9.4e, %9.4e, %6.2f)"
+                % (float(gam), losses[-1], 1e2 * accs[-1])
+            )
+        with gzip.open(LOSSES_FNAME, "wb") as fp:
+            pickle.dump(
+                (
+                    np.array(gams),
+                    np.array(losses),
+                    np.array(gs),
+                    np.array(hs),
+                    np.array(accs),
+                ),
+                fp,
+            )
 
 ## scan through gamma values #######################################
 if "compare" in actions:
     results = odict()
-    diag_regs = torch.logspace(-15, -5, 10, **opts)
+    diag_regs = jaxm.logspace(-15, -5, 10)
     for diag_reg in tqdm(diag_regs):
         Dzk_solve = lambda z, *params, rhs=None, T=False: OPT.Dzk_solve(
             z, Ztr, Ytr, *params, rhs=rhs, T=T, diag_reg=float(diag_reg.cpu())
         )
-        optimizations = dict(Dzk_solve_fn=Dzk_solve, Hz_fn=Hz_fn)
+        # optimizations = dict(Dzk_solve_fn=Dzk_solve, Hz_fn=Hz_fn)
+        optimizations = dict(Dzk_solve_fn=Dzk_solve)
         f_fn, g_fn, h_fn = generate_fns(
-            loss_fn, opt_fn, k_fn, optimizations=optimizations
+            loss_fn, opt_fn, k_fn, optimizations=optimizations, jit=False
         )
 
-        gams, losses, gs, hs = torch.linspace(-8, -5, 10, **opts), [], [], []
+        gams, losses, gs, hs = jaxm.linspace(-8, -5, 10), [], [], []
         for gam in tqdm(gams):
             V = OPT.solve(Ztr, Ytr, gam, method="cvx")
-            losses.append(float(t2n(loss_fn(V, gam))))
+            losses.append(float(j2n(loss_fn(V, gam))))
             gs.append(g_fn(gam))
             # gs_alt.append(g_alt_fn(gam))
             hs.append(h_fn(gam))
@@ -388,9 +390,9 @@ if "compare" in actions:
                 "(%9.4e, %9.4e, %9.4e, %9.4e -> %9.4e)"
                 % (float(gam), losses[-1], gs[-1], hs[-1], gs[-1] / hs[-1])
             )
-        losses, gs, hs = [torch.as_tensor(z, **opts) for z in [losses, gs, hs]]
+        losses, gs, hs = [jaxm.array(z) for z in [losses, gs, hs]]
         gams, losses, gs, hs = [
-            np.array(t2n(z)) for z in [gams, losses, gs, hs]
+            np.array(j2n(z)) for z in [gams, losses, gs, hs]
         ]
         results[float(diag_reg.cpu())] = (gams, losses, gs, hs)
 
@@ -411,38 +413,66 @@ if "compvis" in actions:
     pdb.set_trace()
     pass
 
+if "acc" in actions:
+    with gzip.open(LOSSES_FNAME, "rb") as fp:
+        gams, ls, gs, hs = pickle.load(fp)
+    order = np.argsort(ls)
+    gams, ls, gs, hs = [z[order] for z in [gams, ls, gs, hs]]
+
+    accs = []
+    print("%6s --- %6s" % ("gam", "acc"))
+    for (i, gam) in enumerate(tqdm(gams)):
+        V = opt_fn(n2j(gam))
+        Yp = OPT.pred(V, Zts)
+        acc = jaxm.mean((jaxm.argmax(Yp, -1) == jaxm.argmax(Yts, -1)))
+        accs.append(j2n(acc))
+        tqdm.write("%6.2f --- %6.2f" % (gam, 1e2 * acc))
+        with gzip.open("data/accs.pkl.gz", "wb") as fp:
+            pickle.dump(
+                (
+                    np.array(gams),
+                    np.array(ls),
+                    np.array(gs),
+                    np.array(hs),
+                    np.array(accs),
+                ),
+                fp,
+            )
+    order = np.argsort(gams)
+    accs = np.array(accs)[order]
+    gams, ls, gs, hs = [z[order] for z in [gams, ls, gs, hs]]
+
+    plt.plot(gams, 1e2 * accs)
+    plt.xlabel("$\\gamma$")
+    plt.ulabel("Test Accuracy")
+    plt.tight_layout()
+    plt.show()
+
 
 # visualize loss landscape ########################################
 if "visualize" in actions:
-    # with gzip.open(LOSSES_FNAME, "rb") as fp:
-    #    gams, losses, gs, hs = pickle.load(fp)
-    with gzip.open(LOSSES_FNAME + "2", "rb") as fp:
-        gams, losses, gs, gs_alt, hs = pickle.load(fp)
-    gams = np.array(gams)
+    with gzip.open(LOSSES_FNAME, "rb") as fp:
+        gams, losses, gs, hs, accs = pickle.load(fp)
     plt.plot(gams, losses, color="C0")
     grads = np.diff(losses) / np.diff(gams)
-    # for (gam, loss, g, g_alt, h) in zip(gams, losses, gs, gs_alt, hs):
     for (gam, loss, g, h) in zip(gams, losses, gs, hs):
         dgam = 1.5e-1
         grad = np.interp(gam, gams[:-1], grads)
         plt.plot([gam, gam + dgam], [loss, loss + g * dgam], color="C1")
-        # plt.plot([gam, gam + dgam], [loss, loss + g_alt * dgam], color="C2")
-        # plt.plot([gam, gam + dgam], [loss, loss + grad * dgam], color="C3")
-        print(grad / (g / h))
-    pdb.set_trace()
-    try:
-        with gzip.open(OPTHIST_FNAME, "rb") as fp:
-            gam, gam_hist, gam_hist_losses = pickle.load(fp)
-            gam_hist = np.array(gam_hist)
-            plt.plot(gam_hist, gam_hist_losses, color="C1")
-            plt.scatter(gam_hist, gam_hist_losses, color="C1")
-            plt.scatter(gam_hist[-1], gam_hist_losses[-1], color="black")
-    except FileNotFoundError:
-        pass
+    # try:
+    #    with gzip.open(OPTHIST_FNAME, "rb") as fp:
+    #        gam, gam_hist, gam_hist_losses = pickle.load(fp)
+    #        gam_hist = np.array(gam_hist)
+    #        plt.plot(gam_hist, gam_hist_losses, color="C1")
+    #        plt.scatter(gam_hist, gam_hist_losses, color="C1")
+    #        plt.scatter(gam_hist[-1], gam_hist_losses[-1], color="black")
+    # except FileNotFoundError:
+    #    pass
 
     plt.ylabel("$\\ell_\\operatorname{test}$")
     plt.xlabel("$\\gamma$")
     plt.title("SVM Tuning")
+    plt.ylim([np.min(losses) - 0.1, np.max(losses) + 0.1])
     plt.tight_layout()
 
     # ax = plt.gca()
@@ -461,5 +491,10 @@ if "visualize" in actions:
 
     # ax.add_patch(Rectangle([, 1.0], 5, 3, fc="y", lw=10))
     plt.savefig("figs/gam_optim.png", dpi=200)
+
+    plt.figure()
+    plt.plot(gams, accs)
+    plt.xlabel("$\\gamma$")
+    plt.ylabel("Test Accuracy")
 
     plt.show()

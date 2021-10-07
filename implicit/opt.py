@@ -34,9 +34,6 @@ def minimize_agd(
     assert g_fn is not None
     use_tqdm = use_tqdm and verbose
 
-    if callback_fn is not None:
-        callback_fn(*args)
-
     args = [x2t(arg) for arg in args]
     args = [arg.clone().detach() for arg in args]
     imprv = float("inf")
@@ -49,6 +46,10 @@ def minimize_agd(
         use_writer=use_writer,
     )
     args_hist = [[arg.detach().clone() for arg in args]]
+
+    cb_kw = dict(opt=opt)
+    if callback_fn is not None:
+        callback_fn(*[t2j(arg) for arg in args], **cb_kw)
 
     print_fn = print if not use_tqdm else tqdm.write
     if verbose:
@@ -70,7 +71,7 @@ def minimize_agd(
         opt.step()
         args_hist.append([arg.detach().clone() for arg in args])
         if callback_fn is not None:
-            callback_fn(*[t2j(arg) for arg in args])
+            callback_fn(*[t2j(arg) for arg in args], **cb_kw)
         if batched:
             imprv = sum(
                 torch.mean(
@@ -121,6 +122,9 @@ def minimize_lbfgs(
     assert len(args) > 0
     assert g_fn is not None
     use_tqdm = use_tqdm and verbose
+
+    args = [x2t(arg) for arg in args]
+    args = [arg.clone().detach() for arg in args]
 
     if callback_fn is not None:
         callback_fn(*[t2j(arg) for arg in args])
@@ -309,8 +313,10 @@ def minimize_sqp(
         if jaxm.any(jaxm.isnan(H)):
             raise RuntimeError("Hessian is NaN")
 
-        # F, (reg_it_max, _) = positive_factorization_cholesky(H, reg0)
-        F, (reg_it_max, _) = positive_factorization_lobpcg(H, reg0)
+        if jaxm.zeros(()).device().platform == "gpu":
+             F, (reg_it_max, _) = positive_factorization_cholesky(H, reg0)
+        else:
+            F, (reg_it_max, _) = positive_factorization_lobpcg(H, reg0)
 
         d = jaxm.linalg.cholesky_solve(F, -g[..., None])[..., 0].reshape(
             x_shape

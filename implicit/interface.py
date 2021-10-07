@@ -6,6 +6,10 @@ import numpy as np, torch
 jaxm = None
 jax, jnp, jsp, jrandom = None, None, None, None
 
+def manual_seed(val):
+    assert jrandom is not None
+    global key
+    key = jrandom.PRNGKey(val)
 
 def init(device=None, dtype=None, seed=None):
     if dtype is not None:
@@ -76,6 +80,7 @@ def init(device=None, dtype=None, seed=None):
     jaxm.cat = jnp.concatenate
     jaxm.t = lambda x: jaxm.swapaxes(x, -1, -2)
     jaxm.nn = jax.nn
+    jaxm.manual_seed = manual_seed
 
     # module bindings
     jaxm.jax = jax

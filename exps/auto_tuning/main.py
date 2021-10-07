@@ -10,29 +10,31 @@ import line_profiler
 import header
 
 from implicit.interface import init
-jaxm = init(dtype=np.float32, device="cuda")
+
+#jaxm = init(dtype=np.float32, device="cuda")
+jaxm = init(dtype=np.float64, device="cpu")
 
 from implicit.opt import minimize_sqp, minimize_agd, minimize_lbfgs
 import implicit.utils as utl
-
 from implicit.implicit import implicit_jacobian, implicit_hessian
 from implicit.implicit import generate_fns
+from implicit.pca import visualize_landscape
+
 import mnist
-#import fashion as mnist
+# import fashion as mnist
 
 from objs import LS, OPT_with_centers, CE, OPT_with_diag, OPT_conv
 from objs import LS_with_diag, poly_feat
 
-from implicit.pca import visualize_landscape
-
 PRINT_FN = lambda *args: tqdm.write(" ".join([str(x) for x in args]))
+
 
 def acc_fn(Yp, Y):
     return jaxm.mean(1e2 * (jaxm.argmax(Yp, -1) == jaxm.argmax(Y, -1)))
 
 
 def loss_fn(Yp, Y, param):
-    return jaxm.mean(jaxm.sum(jaxm.softmax(Yp, -1) * Y, -1))
+    return -jaxm.mean(jaxm.log(jaxm.sum(jaxm.softmax(Yp, -1) * Y, -1)))
 
 
 def get_mnist_data(dataset, n=-1, Xp=None, Yp=None):
@@ -61,7 +63,7 @@ def get_centers(X, Y, n=1):
 def main(config):
     results = dict()
     np.random.seed(config["seed"])
-    #torch.manual_seed(config["seed"]) # TODO
+    jaxm.manual_seed(config["seed"])
     n_tr, n_ts = config["train_n"], config["test_n"]
     # read in the parameters ########################################
     Xp, Yp = None, (0.0, 1.0)
@@ -80,7 +82,6 @@ def main(config):
 
     assert config["opt_low"] in ["ls", "ce"]
     OPT = CE(max_it=50) if config["opt_low"] == "ce" else LS()
-    # lam0 = -3.0
     lam0 = -4.0
     if config["fmap"] == "vanilla":
         Ztr = poly_feat(Xtr, n=1)
@@ -91,26 +92,24 @@ def main(config):
         Ztr = poly_feat(Xtr, n=1, centers=centers)
         Zts = poly_feat(Xts, n=1, centers=centers)
         OPT = OPT_with_centers(OPT, centers.shape[-2])
-        # param = jaxm.tensor([-1.0, lam0])
         param = jaxm.array([-3.0, lam0])
     elif config["fmap"] == "diag":
         Ztr = poly_feat(Xtr, n=1)
         Zts = poly_feat(Xts, n=1)
-        #OPT = OPT_with_diag(OPT)
+        # OPT = OPT_with_diag(OPT)
         OPT = LS_with_diag()
         if config["opt_low"] == "ce":
+            raise NotImplementedError
             param = lam0 * jaxm.ones(Ztr.shape[-1] * (Ytr.shape[-1] - 1))
         elif config["opt_low"] == "ls":
-            param = lam0 * jaxm.ones(Ztr.shape[-1] * Ytr.shape[-1])
+            #param = lam0 * jaxm.ones(Ztr.shape[-1] * Ytr.shape[-1])
+            param = lam0 * jaxm.ones(Ztr.shape[-1])
     elif config["fmap"] == "conv":
         Ztr, Zts = Xtr, Xts
-        lam = lam0 * jaxm.ones(1)
-        in_channels, out_channels, stride = 1, 4, config["conv_size"]
-        conv_layer = jaxm.nn.Conv2d(in_channels, out_channels, (stride,) * 2)
-        param = [z.reshape(-1) for z in conv_layer.parameters()][::-1]
-        assert param[0].numel() == conv_layer.out_channels
-        param = jaxm.cat([lam] + param)
-        OPT = OPT_conv(OPT, in_channels, out_channels, stride=stride)
+        in_channels, out_channels = 1, 2
+        kernel_size, stride = 3, config["conv_size"]
+        OPT = OPT_conv(OPT, in_channels, out_channels, kernel_size, stride)
+        param = OPT.generate_parameter()
     else:
         raise ValueError
 
@@ -150,25 +149,13 @@ def main(config):
     # Dpz = implicit_jacobian(k_fn_, W, param, Dzk_solve_fn=Dzk_solve_)
     optimizations = dict(Dzk_solve_fn=Dzk_solve_)
     f_fn, g_fn, h_fn = generate_fns(
-        loss_fn_,
-        opt_fn_,
-        k_fn_,
-        optimizations=optimizations,
-        normalize_grad=False and (config["solver"] == "agd"),
+        loss_fn_, opt_fn_, k_fn_, optimizations=optimizations
     )
-    h_fn_ = h_fn
-    H_hist = []
-
-    def h_fn(*args, **kwargs):
-        ret = h_fn_(*args, **kwargs)
-        H_hist.append(ret)
-        return ret
-
-    # fn = lambda: h_fn.fn(W, param)
+    #f_fn(param), g_fn(param), h_fn(param)
 
     hist = dict(loss_ts=odict(), acc_ts=odict())
 
-    def callback_fn(param):
+    def callback_fn(param, **kw):
         nonlocal hist, f_fn
         W = OPT.solve(Ztr, Ytr, param)
         Yp_ts = OPT.pred(W, Zts, param)
@@ -187,7 +174,7 @@ def main(config):
     )
     opt_fns = [f_fn, g_fn, h_fn] if config["solver"] == "sqp" else [f_fn, g_fn]
     if config["solver"] == "sqp":
-        param, param_hist = minimize_sqp(*opt_fns, param, reg0=1e-3, **oopt)
+        param, param_hist = minimize_sqp(*opt_fns, param, reg0=1e-7, **oopt)
     elif config["solver"] == "ipopt":
         param = minimize_ipopt(*opt_fns, param, **oopt)
     elif config["solver"] == "lbfgs":
@@ -216,22 +203,23 @@ def main(config):
         acc_ts=float(acc_ts),
     )
 
-    return param, results, H_hist, hist
+    return param, results, hist
 
 
 if __name__ == "__main__":
     assert len(sys.argv) >= 2
     idx_job = int(sys.argv[1])
     seeds_fname = "data/seeds.pkl.gz"
-    #if idx_job == 0 and os.path.isfile(seeds_fname):
+    # if idx_job == 0 and os.path.isfile(seeds_fname):
     #    os.remove(seeds_fname)
 
-    #fmaps = ["vanilla", "conv", "diag", "centers"]
+    #fmaps = ["centers", "diag", "conv", "vanilla"]
     #opt_lows = ["ls", "ce"]
     #solvers = ["agd", "sqp", "lbfgs"]
     fmaps = ["diag"]
     opt_lows = ["ls"]
-    solvers = ["agd"]
+    solvers = ["sqp"]
+
     trials = range(10)
 
     params = [
@@ -267,12 +255,12 @@ if __name__ == "__main__":
             opt_low=opt_low,
             conv_size=2,
             solver=solver,
-            max_it=10,
+            max_it=15,
             fmap=fmap,
         )
         print("#" * 80)
         pprint(config)
-        param, results, H_hist, hist = main(config)
+        param, results, hist = main(config)
         all_results[setting] = dict(results=results, hist=hist)
-    #with gzip.open("data/all_results_%03d.pkl.gz" % idx_job, "wb") as fp:
+    # with gzip.open("data/all_results_%03d.pkl.gz" % idx_job, "wb") as fp:
     #    pickle.dump(all_results, fp)

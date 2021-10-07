@@ -10,7 +10,7 @@ jaxm = init()
 
 from implicit.opt import minimize_lbfgs, minimize_sqp
 from implicit.utils import t2j
-from implicit.nn_tools import conv
+from implicit.nn_tools import conv, nn_all_params, nn_forward_gen
 
 
 def Z2Za(Z, sig, d=None):
@@ -26,7 +26,7 @@ def poly_feat(X, n=1, centers=None):
     if centers is not None:
         t_ = time.time()
         dist = jaxm.norm(X[..., None, :] - centers, axis=-1) / X.shape[-1]
-        Z = jax.cat([Z, dist], -1)
+        Z = jaxm.cat([Z, dist], -1)
     return Z
 
 
@@ -134,7 +134,7 @@ class CE(OBJ):
         return (
             -jaxm.sum(Y[..., :-1] * Yp)
             + jaxm.sum(jaxm.scipy.special.logsumexp(Yp_aug, 1))
-        ) / X.shape[-2] + 0.5 * (10.0 ** lam) * jaxm.sum(W ** 2)
+        ) / X.shape[-2] + 0.5 * jaxm.sum((10.0 ** lam) * (W ** 2))
 
 
 class OPT_with_centers:
@@ -190,16 +190,18 @@ class LS_with_diag(OBJ):
     def solve(self, Z, Y, param):
         lam_diag = self.get_params(param)
         n = Z.shape[-2]
-        L = lam_diag.reshape((Z.shape[-1], Y.shape[-1]))
-        ws = [None for i in range(Y.shape[-1])]
-        A_base = jaxm.t(Z) @ Z / n
-        for i in range(Y.shape[-1]):
-            A = A_base + jaxm.diag(10.0 ** L[:, i])
-            #ws[i] = jaxm.linalg.cholesky_solve(
-            #        jaxm.linalg.cholesky(A), jaxm.t(Z) @ Y[:, i] / n
-            #    )
-            ws[i] = jaxm.linalg.solve(A, jaxm.t(Z) @ Y[:, i] / n)
-        ret = jaxm.stack(ws, -1)
+
+        #L = lam_diag.reshape((Z.shape[-1], Y.shape[-1]))
+        #ws = [None for i in range(Y.shape[-1])]
+        #A_base = jaxm.t(Z) @ Z / n 
+        #for i in range(Y.shape[-1]):
+        #    A = A_base + jaxm.diag(10.0 ** L[:, i])
+        #    ws[i] = jaxm.linalg.solve(A, jaxm.t(Z) @ Y[:, i] / n)
+        #ret = jaxm.stack(ws, -1)
+
+        A = jaxm.t(Z) @ Z / n + jaxm.diag(10.0 ** lam_diag.reshape(-1))
+        ret = jaxm.linalg.solve(A, jaxm.t(Z) @ Y / n)
+
         return ret
 
     def fval(self, W, Z, Y, param):
@@ -207,7 +209,8 @@ class LS_with_diag(OBJ):
         n = Z.shape[-2]
         return (
             jaxm.sum((Z @ W - Y) ** 2) / n
-            + jaxm.sum((10.0 ** lam_diag.reshape(W.shape)) * (W ** 2))
+            #+ jaxm.sum((10.0 ** lam_diag.reshape(W.shape)) * (W ** 2))
+            + jaxm.sum((10.0 ** lam_diag.reshape((W.shape[-2], 1))) * (W ** 2))
         ) / 2
 
 
@@ -289,7 +292,7 @@ class OPT_conv:
         # Za = torch.nn.functional.conv2d(Za, C, stride=self.stride)
         Za = conv(Za, C, C0, stride=(self.stride, self.stride))
         Za = Za.reshape((-1, Za[0, ...].size))
-        ret = jaxm.cat([jaxm.tanh(Za), Za[..., 0:1] ** 0], -1)
+        ret = jaxm.cat([Za[..., 0:1] ** 0, jaxm.tanh(Za)], -1)
         return ret
 
     def pred(self, W, Z, param):
