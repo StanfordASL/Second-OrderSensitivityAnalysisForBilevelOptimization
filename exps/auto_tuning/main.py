@@ -96,14 +96,14 @@ def main(config):
     elif config["fmap"] == "diag":
         Ztr = poly_feat(Xtr, n=1)
         Zts = poly_feat(Xts, n=1)
-        # OPT = OPT_with_diag(OPT)
-        OPT = LS_with_diag()
+        OPT = OPT_with_diag(OPT)
+        #OPT = LS_with_diag()
         if config["opt_low"] == "ce":
             raise NotImplementedError
             param = lam0 * jaxm.ones(Ztr.shape[-1] * (Ytr.shape[-1] - 1))
         elif config["opt_low"] == "ls":
-            #param = lam0 * jaxm.ones(Ztr.shape[-1] * Ytr.shape[-1])
-            param = lam0 * jaxm.ones(Ztr.shape[-1])
+            param = lam0 * jaxm.ones(Ztr.shape[-1] * Ytr.shape[-1])
+            #param = lam0 * jaxm.ones(Ztr.shape[-1])
     elif config["fmap"] == "conv":
         Ztr, Zts = Xtr, Xts
         in_channels, out_channels = 1, 2
