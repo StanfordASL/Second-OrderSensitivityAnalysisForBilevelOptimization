@@ -182,18 +182,19 @@ class LS_with_diag(OBJ):
         pass
 
     def get_params(self, param):
-        return jaxm.clip(param, -5, 5)
+        param = param.reshape(-1)
+        return [jaxm.clip(z, -5, 5) for z in [param[0], param[1:]]]
 
     def pred(self, W, Z, param):
         return Z @ W
 
     def solve(self, Z, Y, param):
-        lam_diag = self.get_params(param)
+        lam0, lam_diag = self.get_params(param)
         n = Z.shape[-2]
 
         L = lam_diag.reshape((Z.shape[-1], Y.shape[-1]))
         ws = [None for i in range(Y.shape[-1])]
-        A_base = jaxm.t(Z) @ Z / n 
+        A_base = jaxm.t(Z) @ Z / n + (10.0 ** lam0) * jaxm.eye(Z.shape[-1])
         for i in range(Y.shape[-1]):
             A = A_base + jaxm.diag(10.0 ** L[:, i])
             ws[i] = jaxm.linalg.solve(A, jaxm.t(Z) @ Y[:, i] / n)
@@ -205,11 +206,12 @@ class LS_with_diag(OBJ):
         return ret
 
     def fval(self, W, Z, Y, param):
-        lam_diag = self.get_params(param)
+        lam0, lam_diag = self.get_params(param)
         n = Z.shape[-2]
         return (
             jaxm.sum((Z @ W - Y) ** 2) / n
             + jaxm.sum((10.0 ** lam_diag.reshape(W.shape)) * (W ** 2))
+            + jaxm.sum((10.0 ** lam0) * (W ** 2))
             #+ jaxm.sum((10.0 ** lam_diag.reshape((W.shape[-2], 1))) * (W ** 2))
         ) / 2
 
@@ -230,17 +232,17 @@ class OPT_with_diag(OBJ):
         g_fn = lambda W: self.grad(W, Z, Y, param)
         h_fn = lambda W: self.hess(W, Z, Y, param)
         W = self.OPT.solve(Z, Y, 1e-3)
-        #ret = minimize_sqp(
-        #    f_fn,
-        #    g_fn,
-        #    h_fn,
-        #    W,
-        #    verbose=True,
-        #    max_it=10,
-        #    reg0=1e-9,
-        #    force_step=True,
-        #)
-        ret = minimize_lbfgs(f_fn, g_fn, W, verbose=True, max_it=50, lr=1e-1)
+        ret = minimize_sqp(
+            f_fn,
+            g_fn,
+            h_fn,
+            W,
+            verbose=True,
+            max_it=10,
+            reg0=1e-9,
+            force_step=True,
+        )
+        #ret = minimize_lbfgs(f_fn, g_fn, W, verbose=True, max_it=50, lr=1e-1)
         return ret
 
     def fval(self, W, Z, Y, param):

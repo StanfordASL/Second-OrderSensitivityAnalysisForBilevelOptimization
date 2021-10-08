@@ -11,7 +11,7 @@ import header
 
 from implicit.interface import init
 
-#jaxm = init(dtype=np.float32, device="cuda")
+# jaxm = init(dtype=np.float32, device="cuda")
 jaxm = init(dtype=np.float64, device="cpu")
 
 from implicit.opt import minimize_sqp, minimize_agd, minimize_lbfgs
@@ -21,6 +21,7 @@ from implicit.implicit import generate_fns
 from implicit.pca import visualize_landscape
 
 import mnist
+
 # import fashion as mnist
 
 from objs import LS, OPT_with_centers, CE, OPT_with_diag, OPT_conv
@@ -96,14 +97,14 @@ def main(config):
     elif config["fmap"] == "diag":
         Ztr = poly_feat(Xtr, n=1)
         Zts = poly_feat(Xts, n=1)
-        OPT = OPT_with_diag(OPT)
-        #OPT = LS_with_diag()
+        #OPT = OPT_with_diag(OPT)
+        OPT = LS_with_diag()
         if config["opt_low"] == "ce":
             raise NotImplementedError
             param = lam0 * jaxm.ones(Ztr.shape[-1] * (Ytr.shape[-1] - 1))
         elif config["opt_low"] == "ls":
-            param = lam0 * jaxm.ones(Ztr.shape[-1] * Ytr.shape[-1])
-            #param = lam0 * jaxm.ones(Ztr.shape[-1])
+            param = lam0 * jaxm.ones(Ztr.shape[-1] * Ytr.shape[-1] + 1)
+            # param = lam0 * jaxm.ones(Ztr.shape[-1])
     elif config["fmap"] == "conv":
         Ztr, Zts = Xtr, Xts
         in_channels, out_channels = 1, 2
@@ -151,7 +152,7 @@ def main(config):
     f_fn, g_fn, h_fn = generate_fns(
         loss_fn_, opt_fn_, k_fn_, optimizations=optimizations
     )
-    #f_fn(param), g_fn(param), h_fn(param)
+    # f_fn(param), g_fn(param), h_fn(param)
 
     hist = dict(loss_ts=odict(), acc_ts=odict())
 
@@ -174,7 +175,9 @@ def main(config):
     )
     opt_fns = [f_fn, g_fn, h_fn] if config["solver"] == "sqp" else [f_fn, g_fn]
     if config["solver"] == "sqp":
-        param, param_hist = minimize_sqp(*opt_fns, param, reg0=1e-7, **oopt)
+        param, param_hist = minimize_sqp(
+            *opt_fns, param, reg0=1e-9, ls_pts_nb=5, force_step=True, **oopt
+        )
     elif config["solver"] == "ipopt":
         param = minimize_ipopt(*opt_fns, param, **oopt)
     elif config["solver"] == "lbfgs":
@@ -213,9 +216,9 @@ if __name__ == "__main__":
     # if idx_job == 0 and os.path.isfile(seeds_fname):
     #    os.remove(seeds_fname)
 
-    #fmaps = ["centers", "diag", "conv", "vanilla"]
-    #opt_lows = ["ls", "ce"]
-    #solvers = ["agd", "sqp", "lbfgs"]
+    # fmaps = ["centers", "diag", "conv", "vanilla"]
+    # opt_lows = ["ls", "ce"]
+    # solvers = ["agd", "sqp", "lbfgs"]
     fmaps = ["diag"]
     opt_lows = ["ls"]
     solvers = ["sqp"]
@@ -251,7 +254,7 @@ if __name__ == "__main__":
         config = dict(
             seed=seeds[(fmap, trial)],
             train_n=10 ** 3,
-            test_n=10 ** 3,
+            test_n=10 ** 4,
             opt_low=opt_low,
             conv_size=2,
             solver=solver,

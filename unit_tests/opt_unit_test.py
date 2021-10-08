@@ -58,8 +58,8 @@ OPTs = [
     objs.LS(),
     objs.CE(verbose=True, max_it=30, method="cvx"),
     objs.OPT_with_centers(objs.LS(), 2),
-    objs.OPT_with_diag(objs.LS()),
-    #objs.LS_with_diag(),
+    #objs.OPT_with_diag(objs.LS()),
+    objs.LS_with_diag(),
     objs.OPT_with_diag(
         objs.CE(verbose=True, max_it=30, method="cvx"),
     ),
@@ -68,7 +68,7 @@ param_list = [
     (1e-1,),
     (1e-1,),
     (jaxm.array([1e-1, 1e-1]),),
-    (1e-1 * jaxm.ones(X.shape[-1] * Y.shape[-1]),),
+    (1e-1 * jaxm.ones(X.shape[-1] * Y.shape[-1] + 1),),
     #(1e-1 * jaxm.ones(X.shape[-1]),),
     (1e-1 * jaxm.ones(X.shape[-1] * (Y.shape[-1] - 1)),),
 ]
