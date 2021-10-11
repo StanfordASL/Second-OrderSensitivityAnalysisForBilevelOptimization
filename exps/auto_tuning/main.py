@@ -19,6 +19,7 @@ import implicit.utils as utl
 from implicit.implicit import implicit_jacobian, implicit_hessian
 from implicit.implicit import generate_fns
 from implicit.pca import visualize_landscape
+from implicit.utils import scale_down
 
 import mnist
 
@@ -35,7 +36,9 @@ def acc_fn(Yp, Y):
 
 
 def loss_fn(Yp, Y, param):
-    return -jaxm.mean(jaxm.log(jaxm.sum(jaxm.softmax(Yp, -1) * Y, -1)))
+    # return -jaxm.mean(jaxm.log(jaxm.sum(jaxm.softmax(Yp, -1) * Y, -1)))
+    # return jaxm.mean(-Yp[..., jaxm.argmax(Y, -1)] + jaxm.nn.logsumexp(Yp, -1))
+    return jaxm.mean(-jaxm.sum(Yp * Y, -1) + jaxm.nn.logsumexp(Yp, -1))
 
 
 def get_mnist_data(dataset, n=-1, Xp=None, Yp=None):
@@ -68,13 +71,13 @@ def main(config):
     n_tr, n_ts = config["train_n"], config["test_n"]
     # read in the parameters ########################################
     Xp, Yp = None, (0.0, 1.0)
-    fname = "data/cache2.pkl.gz"
+    fname = "data/centers.pkl.gz"
     try:
         with gzip.open(fname, "rb") as fp:
             Xp, Yp, centers = pickle.load(fp)
     except FileNotFoundError:
         (X_all, Xp), (Y_all, Yp) = get_mnist_data(mnist.train, Xp=Xp, Yp=Yp)
-        centers = get_centers(X_all, Y_all)
+        centers = get_centers(X_all, Y_all, n=5)
         with gzip.open(fname, "wb") as fp:
             pickle.dump((Xp, Yp, centers), fp)
 
@@ -90,14 +93,21 @@ def main(config):
         OPT = OPT
         param = lam0 * jaxm.ones(1)
     elif config["fmap"] == "centers":
-        Ztr = poly_feat(Xtr, n=1, centers=centers)
-        Zts = poly_feat(Xts, n=1, centers=centers)
+        if True:
+            Ztr = scale_down(Xtr, 2, 28, 28)
+            Zts = scale_down(Xts, 2, 28, 28)
+            centers = get_centers(Zts, Yts, n=5)
+        else:
+            Ztr, Zts = Xtr, Xts
+
+        Ztr = poly_feat(Ztr, n=1, centers=centers)
+        Zts = poly_feat(Zts, n=1, centers=centers)
         OPT = OPT_with_centers(OPT, centers.shape[-2])
-        param = jaxm.array([-3.0, lam0])
+        param = jaxm.array([1.0, lam0])
     elif config["fmap"] == "diag":
         Ztr = poly_feat(Xtr, n=1)
         Zts = poly_feat(Xts, n=1)
-        #OPT = OPT_with_diag(OPT)
+        # OPT = OPT_with_diag(OPT)
         OPT = LS_with_diag()
         if config["opt_low"] == "ce":
             raise NotImplementedError
@@ -152,7 +162,7 @@ def main(config):
     f_fn, g_fn, h_fn = generate_fns(
         loss_fn_, opt_fn_, k_fn_, optimizations=optimizations
     )
-    # f_fn(param), g_fn(param), h_fn(param)
+    f, g, h = f_fn(param), g_fn(param), h_fn(param)
 
     hist = dict(loss_ts=odict(), acc_ts=odict())
 
@@ -216,12 +226,13 @@ if __name__ == "__main__":
     # if idx_job == 0 and os.path.isfile(seeds_fname):
     #    os.remove(seeds_fname)
 
-    # fmaps = ["centers", "diag", "conv", "vanilla"]
-    # opt_lows = ["ls", "ce"]
-    # solvers = ["agd", "sqp", "lbfgs"]
-    fmaps = ["diag"]
+    #fmaps = ["centers", "diag", "conv", "vanilla"]
+    #fmaps = ["diag", "conv", "vanilla"]
+    #opt_lows = ["ls"]
+    #solvers = ["agd", "sqp", "lbfgs"]
+    fmaps = ["centers"]
     opt_lows = ["ls"]
-    solvers = ["sqp"]
+    solvers = ["agd"]
 
     trials = range(10)
 
@@ -265,5 +276,5 @@ if __name__ == "__main__":
         pprint(config)
         param, results, hist = main(config)
         all_results[setting] = dict(results=results, hist=hist)
-    # with gzip.open("data/all_results_%03d.pkl.gz" % idx_job, "wb") as fp:
-    #    pickle.dump(all_results, fp)
+    with gzip.open("data/all_results_%03d.pkl.gz" % idx_job, "wb") as fp:
+       pickle.dump(all_results, fp)

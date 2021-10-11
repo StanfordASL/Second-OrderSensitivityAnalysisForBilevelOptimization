@@ -32,7 +32,8 @@ if "loss" in ACTIONS and __name__ == "__main__":
     plt.show()
 
 if "opt" in ACTIONS and __name__ == "__main__":
-    with gzip.open("data/opt_hist.pkl.gz", "rb") as fp:
+    #with gzip.open("data/opt_hist.pkl.gz", "rb") as fp:
+    with gzip.open("data/logbarrier_opt_hist.pkl.gz", "rb") as fp:
         hist = pickle.load(fp)
 
     plt.rc("font", size=16)
@@ -48,7 +49,8 @@ if "opt" in ACTIONS and __name__ == "__main__":
         # step(t, data["acc"], color=color_map[k], label=k)
         step(
             t,
-            data["loss"] - min_loss,
+            #data["loss"] - min_loss,
+            data["loss"],
             color=color_map[k],
             label=label_map[k],
             lw=2,

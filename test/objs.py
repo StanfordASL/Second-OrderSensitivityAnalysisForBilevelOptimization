@@ -144,7 +144,7 @@ class OPT_with_centers:
 
     def get_params(self, param):
         sig, lam = param[0], param[1]
-        return jaxm.clip(sig, -2, 2), jaxm.clip(lam, -5, 5)
+        return jaxm.clip(sig, -4, 2), jaxm.clip(lam, -5, 5)
 
     def pred(self, W, Z, param):
         sig, lam = self.get_params(param)

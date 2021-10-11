@@ -48,6 +48,34 @@ x2t = lambda x, **kw: torch.as_tensor(
 )
 x2n = lambda x: np.array(x) if not isinstance(x, torch.Tensor) else t2n(x)
 
+def scale_down(X, size=2, width=None, height=None):
+    kernel = jaxm.ones((1, 1, size, size)) / (size ** 2)
+
+    assert X.ndim == 2 or X.ndim == 3 or (X.ndim == 4 and X.shape[1] == 1)
+    if X.ndim == 2:
+        height = width if width is not None else round(math.sqrt(X.shape[-1]))
+        width = X.shape[-1] // height
+        Z = X.reshape((X.shape[0], 1, height, width))
+    elif X.ndim == 3:
+        height, width = X.shape[-2:]
+        Z = X[:, None, :, :]
+    elif X.ndim == 4:
+        assert X.shape[1] == 1
+        height, width = X.shape[-2:]
+        Z = X # do nothing
+
+    Z = jaxm.lax.conv(Z, kernel, (size, size), "VALID")
+    Z = Z.reshape((Z.shape[0], Z.shape[1], height // size, width // size))
+
+    if X.ndim == 2:
+        Z = Z.reshape((X.shape[0], -1))
+    elif X.ndim == 3:
+        Z = Z[:, 0, :, :]
+    elif X.ndim == 4:
+        Z = Z
+
+    return Z
+
 ##$#############################################################################
 ##^# table printing utility class ##############################################
 class TablePrinter:

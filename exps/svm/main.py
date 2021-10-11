@@ -159,7 +159,8 @@ class MSVM:
 def loss_fn(V, *params):
     global OPT, Zts, Yts
     Yp = OPT.pred(V, Zts)
-    return -jaxm.mean(jaxm.log(jaxm.sum(jaxm.softmax(Yp, -1) * Yts, -1)))
+    #return -jaxm.mean(jaxm.log(jaxm.sum(jaxm.softmax(Yp, -1) * Yts, -1)))
+    return jaxm.mean(-Yp[..., jaxm.argmax(Yts, -1)] + jaxm.nn.logsumexp(Yp, -1))
 
 
 @jaxm.jit

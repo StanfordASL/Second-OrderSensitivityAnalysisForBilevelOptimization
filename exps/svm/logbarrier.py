@@ -22,9 +22,9 @@ from implicit.utils import n2j, j2n
 
 from objs import LS, CE, OBJ
 
-import mnist
+# import mnist
+import fashion as mnist
 
-# import fashion as mnist
 from utils import scale_down
 
 spmat = lambda x: sp.csc_matrix(x)
@@ -85,7 +85,7 @@ class MSVM(OBJ):
             + jaxm.sum(x * q)
             # + self.reg * jaxm.sum(x ** 2)
         )
-        cstr = (A @ x - b) / 1e3
+        cstr = A @ x - b
         return obj - jaxm.mean(jaxm.log(-ALF * cstr)) / ALF
 
     def solve(self, Z, Y, *params, method="cvx", verbose=False):
@@ -99,8 +99,8 @@ class MSVM(OBJ):
                 + q @ x
                 # + self.reg * cp.sum_squares(x)
             )
-            cstr = (A @ x - b) / 1e3
-            obj = obj - cp.sum(cp.log(-ALF * cstr)) / ALF
+            cstr = A @ x - b
+            obj = obj - cp.sum(cp.log(-ALF * cstr)) / ALF / cstr.size
             prob = cp.Problem(cp.Minimize(obj))
             prob.solve(cp.MOSEK, verbose=verbose)
             assert prob.status in ["optimal", "optimal_inaccurate"]
@@ -113,7 +113,10 @@ class MSVM(OBJ):
 def loss_fn(V, *params):
     global OPT, Zts, Yts
     Yp = OPT.pred(V, Zts)
-    return jaxm.mean(-Yp[..., jaxm.argmax(Yts, -1)] + jaxm.nn.logsumexp(Yp, -1))
+    # return jaxm.mean(-Yp[..., jaxm.argmax(Yts, -1)] + jaxm.nn.logsumexp(Yp, -1))
+    return jaxm.mean(jaxm.sum(-Yp * Yts, -1)) + jaxm.mean(
+        jaxm.nn.logsumexp(Yp, -1)
+    )
 
 
 @jaxm.jit
@@ -136,22 +139,26 @@ if __name__ == "__main__":
     Xtr = n2j(Xtr[r, :]).astype(dtype)
     Ytr = jaxm.nn.one_hot(n2j(Ytr[r]), 10).astype(dtype)
 
-    r = np.random.randint(Xts.shape[0], size=(2000,))
-    Xts = n2j(Xts[r, :]).astype(dtype)
-    Yts = jaxm.nn.one_hot(n2j(Yts[r]), 10).astype(dtype)
+    #r = np.random.randint(Xts.shape[0], size=(10 ** 4,))
+    #Xts = n2j(Xts[r, :]).astype(dtype)
+    #Yts = jaxm.nn.one_hot(n2j(Yts[r]), 10).astype(dtype)
 
-    Ztr = jaxm.cat([Xtr[:, :1] ** 0, scale_down(Xtr)], -1)
-    Zts = jaxm.cat([Xts[:, :1] ** 0, scale_down(Xts)], -1)
+    Xts = n2j(Xts).astype(dtype)
+    Yts = jaxm.nn.one_hot(n2j(Yts), 10).astype(dtype)
+
+    Ztr = jaxm.cat([Xtr[:, :1] ** 0, scale_down(Xtr, 2)], -1)
+    Zts = jaxm.cat([Xts[:, :1] ** 0, scale_down(Xts, 2)], -1)
 
     OPT = MSVM(k=10, e=Ztr.shape[-1])
 
 LOSSES_FNAME = "data/logbarrier_losses.pkl.gz"
 DIAGREG_FNAME = "data/logbarrier_diagreg.pkl.gz"
-OPTHIST_FNAME = "data/logbarrier_opt_hist.pkl.gz"
+# OPTHIST_FNAME = "data/logbarrier_opt_hist.pkl.gz"
+OPTHIST_FNAME = "data/logbarrier_opt_hist"
 
 # prepare the functions ###########################################
 if __name__ == "__main__":
-    gam = jaxm.array([-8.0])
+    gam = jaxm.array([-7.0])
     params = (gam,)
     k_fn = lambda z, *params: OPT.grad(z, Ztr, Ytr, *params)
     opt_fn = lambda *params: OPT.solve(Ztr, Ytr, *params, method="cvx")
@@ -205,8 +212,8 @@ if "optimize" in actions:
         hist[solver]["t"].append(t_inc)
         t_stamp = time.time()
 
-    agd_opts = dict(max_it=100, ai=1e-1, af=1e-2, callback_fn=cb_fn)
-    lbfgs_opts = dict(max_it=10, lr=1e-1, callback_fn=cb_fn)
+    agd_opts = dict(max_it=50, ai=1e-1, af=1e-1, callback_fn=cb_fn)
+    lbfgs_opts = dict(max_it=4, lr=1e-1, callback_fn=cb_fn)
     sqp_opts = dict(
         max_it=10, reg0=1e-9, ls_pts_nb=1, force_step=True, callback_fn=cb_fn
     )
@@ -214,7 +221,9 @@ if "optimize" in actions:
     minimize_fn = dict(agd=minimize_agd, lbfgs=minimize_lbfgs, sqp=minimize_sqp)
     opts_map = dict(agd=agd_opts, lbfgs=lbfgs_opts, sqp=sqp_opts)
 
-    for solver in ["sqp", "lbfgs", "agd"]:
+    for solver in ["agd", "sqp", "lbfgs"]:
+        if solver not in actions:
+            continue
         keys = copy(list(f_fn.cache.keys()))
         assert (
             len(f_fn.cache.keys())
@@ -241,13 +250,15 @@ if "optimize" in actions:
         hist[solver]["gam_hist"] = gam_hist
         hist[solver]["gam_hist_losses"] = gam_hist_losses
 
-    with gzip.open(OPTHIST_FNAME, "wb") as fp:
-        pickle.dump(hist, fp)
+        with gzip.open(
+            OPTHIST_FNAME + "_".join(list(hist.keys())) + ".pkl.gz", "wb"
+        ) as fp:
+            pickle.dump(hist, fp)
 
 # scan through gamma values #######################################
 if "scan" in actions:
     compute_grads = True
-    gams, losses, gs, hs, accs = jaxm.linspace(-9, 1, 100), [], [], [], []
+    gams, losses, gs, hs, accs = jaxm.linspace(-9, 0, 100), [], [], [], []
     for gam in tqdm(gams):
         try:
             V = OPT.solve(Ztr, Ytr, gam, method="cvx")
@@ -339,8 +350,8 @@ if "visualize" in actions:
     with gzip.open(LOSSES_FNAME, "rb") as fp:
         gams, losses, gs, hs, accs = pickle.load(fp)
     gams = gams[: len(losses)]
-    #mask = gams < -7.0
-    #gams, losses, gs, hs = [z[mask] for z in [gams, losses, gs, hs]]
+    # mask = gams < -7.0
+    # gams, losses, gs, hs = [z[mask] for z in [gams, losses, gs, hs]]
 
     plt.plot(gams, losses, color="C0")
     grads = np.diff(losses) / np.diff(gams)
@@ -349,7 +360,8 @@ if "visualize" in actions:
         grad = np.interp(gam, gams[:-1], grads)
         plt.plot([gam, gam + dgam], [loss, loss + g * dgam], color="C1")
 
-        if i == len(gams) - 2:
+        # if i == 2:
+        if i == np.argmin(losses):
             # xp = np.linspace(-10 * dgam + gam, gam + 10 * dgam, 100)
             xp = np.linspace(gams[0], gams[-1], 100)
             fp = loss + g * (xp - gam) + 0.5 * h * (xp - gam) ** 2
@@ -387,7 +399,7 @@ if "visualize" in actions:
     # plt.gca().get_xaxis().get_major_formatter().set_powerlimits((0, 0))
 
     # ax.add_patch(Rectangle([, 1.0], 5, 3, fc="y", lw=10))
-    #plt.savefig("figs/gam_optim.png", dpi=200)
+    # plt.savefig("figs/gam_optim.png", dpi=200)
 
     plt.figure()
     plt.plot(gams, accs)
