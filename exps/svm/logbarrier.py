@@ -1,4 +1,5 @@
-import os, sys, pdb, time, gzip, pickle, math
+import os, sys, pdb, time, gzip, pickle, math, re
+from pprint import pprint
 from collections import OrderedDict as odict
 from copy import copy
 
@@ -12,7 +13,7 @@ import header
 
 from implicit.interface import init
 
-jaxm = init(dtype=np.float32, device="cpu")
+jaxm = init(dtype=np.float64, device="cpu")
 # jaxm = init(dtype=np.float32, device="cuda")
 from implicit.opt import minimize_lbfgs, minimize_sqp, minimize_agd
 from implicit.implicit import implicit_jacobian, implicit_hessian, generate_fns
@@ -124,8 +125,9 @@ def Hz_fn(V, *params):
     return jaxm.hessian(loss_fn)(V, *params)
 
 
-actions = sys.argv[1:]
-
+ACTION = sys.argv[1]
+SOLVER = sys.argv[2] if len(sys.argv) >= 3 else None
+SEED_IDX = int(sys.argv[3]) if len(sys.argv) >= 3 else None
 
 # prepare data #################################################3
 if __name__ == "__main__":
@@ -135,13 +137,38 @@ if __name__ == "__main__":
     Xtr, Ytr = mnist.train["images"], mnist.train["labels"]
     Xts, Yts = mnist.test["images"], mnist.test["labels"]
 
+    SEEDS = [
+        1795583961,
+        648676297,
+        14134085,
+        354083586,
+        539263694,
+        273408685,
+        1287724670,
+        1507419984,
+        1431122347,
+        996548115,
+        1435200443,
+        1582537834,
+        345169344,
+        124845250,
+        1547343351,
+        1746379657,
+        257196899,
+        1495775825,
+        1981745362,
+        939552778,
+    ]
+    SEED = SEEDS[SEED_IDX]
+    np.random.seed(SEED)
+    jaxm.manual_seed(SEED)
     r = np.random.randint(Xtr.shape[0], size=(2000,))
     Xtr = n2j(Xtr[r, :]).astype(dtype)
     Ytr = jaxm.nn.one_hot(n2j(Ytr[r]), 10).astype(dtype)
 
-    #r = np.random.randint(Xts.shape[0], size=(10 ** 4,))
-    #Xts = n2j(Xts[r, :]).astype(dtype)
-    #Yts = jaxm.nn.one_hot(n2j(Yts[r]), 10).astype(dtype)
+    # r = np.random.randint(Xts.shape[0], size=(10 ** 4,))
+    # Xts = n2j(Xts[r, :]).astype(dtype)
+    # Yts = jaxm.nn.one_hot(n2j(Yts[r]), 10).astype(dtype)
 
     Xts = n2j(Xts).astype(dtype)
     Yts = jaxm.nn.one_hot(n2j(Yts), 10).astype(dtype)
@@ -153,8 +180,7 @@ if __name__ == "__main__":
 
 LOSSES_FNAME = "data/logbarrier_losses.pkl.gz"
 DIAGREG_FNAME = "data/logbarrier_diagreg.pkl.gz"
-# OPTHIST_FNAME = "data/logbarrier_opt_hist.pkl.gz"
-OPTHIST_FNAME = "data/logbarrier_opt_hist"
+OPTHIST_FNAME = "data/logbarrier_opt_hist.pkl.gz"
 
 # prepare the functions ###########################################
 if __name__ == "__main__":
@@ -171,45 +197,43 @@ if __name__ == "__main__":
     )
 
 # optimize starting from a bad guess ##############################
-if "optimize" in actions:
+if "optimize" == ACTION:
     f, g, h = f_fn(*params), g_fn(*params), h_fn(*params)
 
-    def main_():
-        print(jaxm.sum(f_fn(*params)))
-        print(jaxm.sum(g_fn(*params)))
-        print(jaxm.sum(h_fn(*params)))
+    # def main_():
+    #    print(jaxm.sum(f_fn(*params)))
+    #    print(jaxm.sum(g_fn(*params)))
+    #    print(jaxm.sum(h_fn(*params)))
 
-    main_()
+    # main_()
 
-    LP = lp.LineProfiler()
-    LP.add_function(f_fn.fn)
-    LP.add_function(g_fn.fn)
-    LP.add_function(h_fn.fn)
-    LP.add_function(main_)
-    main = LP.wrap_function(main_)
-    main()
-    LP.print_stats(output_unit=1e-3)
+    # LP = lp.LineProfiler()
+    # LP.add_function(f_fn.fn)
+    # LP.add_function(g_fn.fn)
+    # LP.add_function(h_fn.fn)
+    # LP.add_function(main_)
+    # main = LP.wrap_function(main_)
+    # main()
+    # LP.print_stats(output_unit=1e-3)
 
-    method = "sqp"
     opt_opts = dict(verbose=True, full_output=True)
     fns = dict(agd=[f_fn, g_fn], lbfgs=[f_fn, g_fn], sqp=[f_fn, g_fn, h_fn])
 
-    hist, t_stamp = dict(), time.time()
-    solver, cb_it = None, 0
+    hist, t_stamp, cb_it = dict(), time.time(), 0
 
     def cb_fn(*args, **kw):
-        global solver, hist, t_stamp, cb_it
+        global hist, t_stamp, cb_it
         cb_it += 1
         t_inc = time.time() - t_stamp
         z = opt_fn(*args)
         Yp = OPT.pred(z, Zts)
         acc = jaxm.mean((Yp.argmax(-1) == Yts.argmax(-1)))
         tqdm.write("Accuracy: %5.1f%%" % float(1e2 * acc))
-        hist[solver]["loss"].append(float(loss_fn(z, gam)))
-        hist[solver]["acc"].append(float(1e2 * acc))
-        hist[solver]["it"].append(cb_it)
-        hist[solver]["fns"].append(len(f_fn.cache.keys()))
-        hist[solver]["t"].append(t_inc)
+        hist[(SOLVER, SEED)]["loss"].append(float(loss_fn(z, gam)))
+        hist[(SOLVER, SEED)]["acc"].append(float(1e2 * acc))
+        hist[(SOLVER, SEED)]["it"].append(cb_it)
+        hist[(SOLVER, SEED)]["fns"].append(len(f_fn.cache.keys()))
+        hist[(SOLVER, SEED)]["t"].append(t_inc)
         t_stamp = time.time()
 
     agd_opts = dict(max_it=50, ai=1e-1, af=1e-1, callback_fn=cb_fn)
@@ -221,42 +245,39 @@ if "optimize" in actions:
     minimize_fn = dict(agd=minimize_agd, lbfgs=minimize_lbfgs, sqp=minimize_sqp)
     opts_map = dict(agd=agd_opts, lbfgs=lbfgs_opts, sqp=sqp_opts)
 
-    for solver in ["agd", "sqp", "lbfgs"]:
-        if solver not in actions:
-            continue
-        keys = copy(list(f_fn.cache.keys()))
-        assert (
-            len(f_fn.cache.keys())
-            == len(g_fn.cache.keys())
-            == len(h_fn.cache.keys())
-        )
-        for k in keys:
-            del f_fn.cache[k]
-        assert len(f_fn.cache.keys()) == 0
-        assert len(g_fn.cache.keys()) == 0
-        assert len(h_fn.cache.keys()) == 0
-        hist[solver] = dict(acc=[], fns=[], it=[], t=[], loss=[])
-        opt_opts_ = dict(opt_opts, **opts_map[solver])
-        _, gam_hist = minimize_fn[solver](*fns[solver], gam, **opt_opts_)
-        t = time.time()
-        # gam_hist_losses = [loss_fn(opt_fn(gam), gam) for gam in gam_hist]
-        gam_hist_losses = [f_fn(gam) for gam in gam_hist]
-        print("loss eval takes %9.4e" % (time.time() - t))
+    keys = copy(list(f_fn.cache.keys()))
+    assert (
+        len(f_fn.cache.keys())
+        == len(g_fn.cache.keys())
+        == len(h_fn.cache.keys())
+    )
+    for k in keys:
+        del f_fn.cache[k]
+    assert len(f_fn.cache.keys()) == 0
+    assert len(g_fn.cache.keys()) == 0
+    assert len(h_fn.cache.keys()) == 0
+    hist[(SOLVER, SEED)] = dict(acc=[], fns=[], it=[], t=[], loss=[])
+    opt_opts_ = dict(opt_opts, **opts_map[SOLVER])
+    _, gam_hist = minimize_fn[SOLVER](*fns[SOLVER], gam, **opt_opts_)
+    t = time.time()
+    gam_hist_losses = [f_fn(gam) for gam in gam_hist]
+    print("loss eval takes %9.4e" % (time.time() - t))
 
-        gam_hist = [j2n(gam_) for gam_ in gam_hist]
-        gam_hist_losses = [j2n(loss) for loss in gam_hist_losses]
+    gam_hist = [j2n(gam_) for gam_ in gam_hist]
+    gam_hist_losses = [j2n(loss) for loss in gam_hist_losses]
 
-        hist[solver]["gam"] = j2n(gam)
-        hist[solver]["gam_hist"] = gam_hist
-        hist[solver]["gam_hist_losses"] = gam_hist_losses
+    hist[(SOLVER, SEED)]["gam"] = j2n(gam)
+    hist[(SOLVER, SEED)]["gam_hist"] = gam_hist
+    hist[(SOLVER, SEED)]["gam_hist_losses"] = gam_hist_losses
 
-        with gzip.open(
-            OPTHIST_FNAME + "_".join(list(hist.keys())) + ".pkl.gz", "wb"
-        ) as fp:
-            pickle.dump(hist, fp)
+    with gzip.open(
+        "%s_%s_%d.pkl.gz" % (OPTHIST_FNAME.split(".")[0], SOLVER, SEED),
+        "wb",
+    ) as fp:
+        pickle.dump(hist, fp)
 
 # scan through gamma values #######################################
-if "scan" in actions:
+if "scan" == ACTION:
     compute_grads = True
     gams, losses, gs, hs, accs = jaxm.linspace(-9, 0, 100), [], [], [], []
     for gam in tqdm(gams):
@@ -298,7 +319,7 @@ if "scan" in actions:
             )
 
 ## scan through gamma values #######################################
-if "compare" in actions:
+if "compare" == ACTION:
     results = odict()
     diag_regs = jaxm.logspace(-15, -5, 10)
     for diag_reg in tqdm(diag_regs):
@@ -330,80 +351,169 @@ if "compare" in actions:
     with gzip.open(DIAGREG_FNAME, "wb") as fp:
         pickle.dump(results, fp)
 
-if "compvis" in actions:
-    with gzip.open(DIAGREG_FNAME, "rb") as fp:
-        results = pickle.load(fp)
-    np.set_printoptions(precision=3, linewidth=100)
-    vals = []
-    for k in results.keys():
-        gams, losses, gs, hs = results[k]
-        if len(vals) == 0:
-            vals.append(gams)
-        vals.append(gs / hs)
-    print(np.stack(vals))
-    pdb.set_trace()
-    pass
+if "compvis" == ACTION:
+    pat = re.compile(r"logbarrier_opt_hist_[a-z]+_[0-9]+\.pkl\.gz")
+    dirname = os.path.join(os.path.abspath(os.path.dirname(__file__)), "data")
+    files = [
+        os.path.join(dirname, f)
+        for f in os.listdir(dirname)
+        if os.path.isfile(os.path.join(dirname, f))
+        and re.match(pat, f) is not None
+    ]
+    results = dict()
+    seeds = dict()
+    for fname in files:
+        with gzip.open(fname, "rb") as fp:
+            data = pickle.load(fp)
+        key = list(data.keys())[0]
+        value = data[key]
+        solver, seed = key
+        results.setdefault(solver, dict())
+        results[solver][seed] = value
 
+    LOSSFIG, ACCFIG = 3242332, 123493
+    plt.figure(LOSSFIG, figsize=(5, 4))
+    plt.figure(ACCFIG, figsize=(5, 4))
+    #colors = dict(sqp="C0", agd="C2", lbfgs="C1")
+    colors = dict(sqp="black", agd="C0", lbfgs="C4")
+    labels = dict(sqp="Newton's Method (Ours)", lbfgs="L-BFGS", agd="Adam")
+    solvers = ["sqp", "agd", "lbfgs"]
+
+    value_map = dict()
+    for solver in solvers:
+        cat = np.concatenate
+
+        ts = [results[solver][seed]["t"] for seed in results[solver].keys()]
+        max_len = np.max([len(t) for t in ts])
+        ts = [cat([t, math.nan * np.ones(max_len - len(t))]) for t in ts]
+        ts = np.cumsum(np.stack(ts, 0), -1)
+        t_mu = np.nanmean(ts, -2)
+
+        accs = [results[solver][seed]["acc"] for seed in results[solver].keys()]
+        max_len = np.max([len(acc) for acc in accs])
+        accs = [
+            cat([acc, acc[-1] * np.ones(max_len - len(acc))]) for acc in accs
+        ]
+        acc_mu = np.mean(accs, -2)
+        acc_err = np.std(accs, -2) / math.sqrt(len(accs))
+
+        ls = [results[solver][seed]["loss"] for seed in results[solver].keys()]
+        max_len = np.max([len(l) for l in ls])
+        ls = [cat([l, l[-1] * np.ones(max_len - len(l))]) for l in ls]
+        l_mu = np.mean(ls, -2)
+        l_err = np.std(ls, -2) / math.sqrt(len(ls))
+        value_map[solver] = t_mu, acc_mu, acc_err, l_mu, l_err
+
+        #print(solver)
+        #pprint(
+        #    {
+        #        seed: results[solver][seed]["loss"][0]
+        #        for seed in results[solver].keys()
+        #    }
+        #)
+
+    min_t = np.min([value_map[solver][0][0] for solver in solvers])
+    max_t = np.max([value_map[solver][0][-1] for solver in solvers])
+
+    for solver in solvers:
+        t_mu, acc_mu, acc_err, l_mu, l_err = value_map[solver]
+        t_mu = cat([[min_t], t_mu, [max_t]])
+        acc_mu = cat([[acc_mu[0]], acc_mu, [acc_mu[-1]]])
+        acc_err = cat([[0.0], acc_err, [acc_err[-1]]])
+        l_mu = cat([[l_mu[0]], l_mu, [l_mu[-1]]])
+        l_err = cat([[0.0], l_err, [l_err[-1]]])
+        value_map[solver] = t_mu, acc_mu, acc_err, l_mu, l_err
+
+    from vis import step, step_between
+
+    for solver in solvers:
+        t_mu, acc_mu, acc_err, l_mu, l_err = value_map[solver]
+        plt.figure(ACCFIG)
+        step(t_mu, acc_mu, color=colors[solver], label=labels[solver])
+        step_between(
+            t_mu,
+            acc_mu - acc_err,
+            acc_mu + acc_err,
+            color=colors[solver],
+            label="",
+            alpha=0.5,
+        )
+
+        plt.figure(LOSSFIG)
+        step(t_mu, l_mu, color=colors[solver], label=labels[solver])
+        step_between(
+            t_mu,
+            l_mu - l_err,
+            l_mu + l_err,
+            color=colors[solver],
+            label="",
+            alpha=0.5,
+        )
+    plt.figure(ACCFIG)
+    leg = plt.legend()
+    plt.xlabel("Time (s)")
+    plt.ylabel("Test Accuracy")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(
+        "figs/svm_opt_acc.png", bbox_inches="tight", pad_inches=0, dpi=300
+    )
+
+    plt.figure(LOSSFIG)
+    leg = plt.legend()
+    plt.xlabel("Time (s)")
+    plt.ylabel("$\\ell_\\operatorname{test}$")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(
+        "figs/svm_opt_loss.png", bbox_inches="tight", pad_inches=0, dpi=300
+    )
+
+    plt.show()
 
 # visualize loss landscape ########################################
-if "visualize" in actions:
+if "visualize" == ACTION:
     with gzip.open(LOSSES_FNAME, "rb") as fp:
         gams, losses, gs, hs, accs = pickle.load(fp)
     gams = gams[: len(losses)]
-    # mask = gams < -7.0
-    # gams, losses, gs, hs = [z[mask] for z in [gams, losses, gs, hs]]
 
-    plt.plot(gams, losses, color="C0")
+    plt.figure(figsize=(5, 3))
+    plt.plot(gams, losses, color="C0", label="")
     grads = np.diff(losses) / np.diff(gams)
     for (i, (gam, loss, g, h)) in enumerate(zip(gams, losses, gs, hs)):
         dgam = 1.5e-1
         grad = np.interp(gam, gams[:-1], grads)
-        plt.plot([gam, gam + dgam], [loss, loss + g * dgam], color="C1")
+        # plt.plot([gam, gam + dgam], [loss, loss + g * dgam], color="C1")
 
-        # if i == 2:
-        if i == np.argmin(losses):
-            # xp = np.linspace(-10 * dgam + gam, gam + 10 * dgam, 100)
+        if i == np.argmin(losses) - 10:
+            # plot the local quadratic approximation ###############
             xp = np.linspace(gams[0], gams[-1], 100)
             fp = loss + g * (xp - gam) + 0.5 * h * (xp - gam) ** 2
-            plt.plot(xp, fp, color="C2")
-            plt.plot([gam, gam], [np.max(losses), np.min(losses)], color="C2")
+            plt.plot(xp, fp, color="black", label="ours")
+
+            fp = loss + g * (xp - gam)
+            plt.plot(xp, fp, color="red", label="IFT")
+
+            # plt.plot([gam, gam], [np.max(losses), np.min(losses)], color="C2")
+            plt.scatter(gam, loss, color="black", label="")
+
         print(grad / (g / h))
-    # try:
-    #    with gzip.open(OPTHIST_FNAME, "rb") as fp:
-    #        gam, gam_hist, gam_hist_losses = pickle.load(fp)
-    #        gam_hist = np.array(gam_hist)
-    #        plt.plot(gam_hist, gam_hist_losses, color="C1")
-    #        plt.scatter(gam_hist, gam_hist_losses, color="C1")
-    #        plt.scatter(gam_hist[-1], gam_hist_losses[-1], color="black")
-    # except FileNotFoundError:
-    #    pass
 
     plt.ylim([np.min(losses) - 0.1, np.max(losses) + 0.1])
     plt.ylabel("$\\ell_\\operatorname{test}$")
-    plt.xlabel("$\\gamma$")
-    plt.title("SVM Tuning")
-    plt.tight_layout()
-
-    # ax = plt.gca()
-    # a = plt.axes([0.3, 0.3, 0.6, 0.6])
-    # p1 = list(zip(*[(g, l) for (g, l) in zip(gams, losses) if g < 3e-6]))
-    # p2 = list(
-    #    zip(*[(g, l) for (g, l) in zip(gam_hist, gam_hist_losses) if g < 3e-6])
-    # )
-    # plt.plot(*p1, color="C0")
-    ## plt.scatter(*p1, color="C0")
-    # plt.plot(*p2, color="C1")
-    # plt.scatter(*p2, color="C1")
-    # plt.ylabel("$\\ell_\\operatorname{test}$")
     # plt.xlabel("$\\gamma$")
-    # plt.gca().get_xaxis().get_major_formatter().set_powerlimits((0, 0))
+    plt.xlabel("$p$")
+    # plt.title("SVM Tuning")
+    plt.tight_layout()
+    plt.margins(0, 0)
+    plt.gca().spines["top"].set_color("none")
+    plt.gca().spines["right"].set_color("none")
+    plt.legend()
+    plt.savefig("figs/svm_loss.png", dpi=300, bbox_inches="tight", pad_inches=0)
 
-    # ax.add_patch(Rectangle([, 1.0], 5, 3, fc="y", lw=10))
-    # plt.savefig("figs/gam_optim.png", dpi=200)
-
-    plt.figure()
-    plt.plot(gams, accs)
-    plt.xlabel("$\\gamma$")
-    plt.ylabel("Test Accuracy")
+    # plt.figure()
+    # plt.plot(gams, accs)
+    # plt.xlabel("$\\gamma$")
+    # plt.ylabel("Test Accuracy")
 
     plt.show()

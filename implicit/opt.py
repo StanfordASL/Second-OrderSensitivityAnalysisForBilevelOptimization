@@ -283,6 +283,10 @@ def minimize_sqp(
         raise ValueError("SQP only only supports single variable functions")
     x = args[0]
     x_shape = x.shape
+
+    if callback_fn is not None:
+        callback_fn(x)
+
     if batched:
         M, x_size = x_shape[0], np.prod(x_shape[1:])
     else:
@@ -290,9 +294,6 @@ def minimize_sqp(
     it, imprv = 0, float("inf")
     x_best, f_best = x, jaxm.atleast_1d(f_fn(x))
     f_hist, x_hist = [f_best], [x]
-
-    if callback_fn is not None:
-        callback_fn(x)
 
     t__ = time.time()
     tp = utl.TablePrinter(

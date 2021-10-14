@@ -5,6 +5,7 @@ import torch, matplotlib.pyplot as plt, numpy as np
 
 KEY = "loss_ts" if len(sys.argv) <= 1 else sys.argv[1].lower()
 
+
 def compute_xy(data_list, key):
     xs, ys = [], []
     for data in data_list:
@@ -59,10 +60,10 @@ if __name__ == "__main__":
         results[key].setdefault(solver, [])
         results[key][solver].append(v)
 
-    color_map = dict(sqp="C0", agd="C2", lbfgs="C1")
+    #color_map = dict(sqp="C0", agd="C2", lbfgs="C1")
+    color_map = dict(sqp="black", agd="C0", lbfgs="C4")
     label_map = dict(sqp="SQP (Ours)", lbfgs="L-BFGS", agd="Adam")
     cat = np.concatenate
-
 
     ymin, ymax = math.inf, -math.inf
     for (k, data) in results.items():
@@ -77,15 +78,18 @@ if __name__ == "__main__":
         ymax = 2.1
 
     for (k, data) in results.items():
-        plt.figure()
+        plt.figure(figsize=(5, 4))
         max_it = -math.inf
         for solver in data.keys():
             z, mu, err = compute_xy(data[solver], KEY)
             max_it = max(max_it, z[-1])
-        for solver in data.keys():
+        #for solver in data.keys():
+        for solver in ["sqp", "agd", "lbfgs"]:
+            if solver not in data.keys():
+                continue
             z, mu, err = compute_xy(data[solver], KEY)
-            if KEY == "acc_ts":
-                mu, err = mu / 100, err / 100
+            #if KEY == "acc_ts":
+            #    mu, err = mu / 100, err / 100
             if z[-1] != max_it:
                 z = cat([z, [max_it]])
                 mu, err = cat([mu, [mu[-1]]]), cat([err, [err[-1]]])
@@ -99,18 +103,37 @@ if __name__ == "__main__":
             plt.grid(b=True, which="major")
             plt.grid(b=True, which="minor")
         plt.xlim([0, 200])
-        plt.ylim([ymin - 0.1 * yrng, ymax + 0.1 * yrng])
-        plt.margins(0)
+
+        #plt.ylim([ymin - 0.1 * yrng, ymax + 0.1 * yrng])
+        if KEY == "loss_ts":
+            plt.ylim([1.7, 2.15])
+        elif KEY == "acc_ts":
+            plt.ylim([60.0, 90.0])
         plt.xlabel("$z^\\star$ evaluations")
-        #if key == "loss_ts":
-        #    plt.ylabel("$f_U\\left(z^\\star, p\\right)$")
-        #elif key == "acc_ts":
-        #    plt.ylabel("Test Accuracy")
+        if key == "loss_ts":
+           plt.ylabel("$f_U\\left(z^\\star, p\\right)$")
+        elif key == "acc_ts":
+           plt.ylabel("Test Accuracy")
         if key == "acc_ts":
             plt.legend(loc="lower right")
         elif key == "loss_ts":
             plt.legend(loc="upper right")
-        plt.title(k)
+        #plt.title(k)
+
+        plt.margins(0)
+
+        if k.split("_")[0] == "vanilla":
+            plt.legend()
+            if KEY == "loss_ts":
+                plt.ylabel("$\\ell_\\operatorname{test}$")
+            elif KEY == "acc_ts":
+                plt.ylabel("Test Accuracy")
         plt.tight_layout()
-        plt.savefig("figs/%s_%s.png" % (k, KEY), dpi=200)
+
+        plt.savefig(
+            "figs/%s_%s.png" % (k, KEY),
+            dpi=300,
+            bbox_inches="tight",
+            pad_inches=0,
+        )
     plt.show()

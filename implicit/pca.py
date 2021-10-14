@@ -5,8 +5,10 @@ from mpl_toolkits import mplot3d
 from tqdm import tqdm
 
 from .interface import init
+from .utils import j2n, n2j
 
 jaxm = init()
+
 
 rand_sign = lambda: random.randint(0, 1) * 2 - 1
 
@@ -41,9 +43,9 @@ def visualize_landscape(
 ):
     param_shape = x_hist[0].shape
     if isinstance(x_hist, list) or isinstance(x_hist, tuple):
-        X = jaxm.stack(x_hist, 0).reshape((-1, x_hist[0].numel()))
+        X = jaxm.stack(x_hist, 0).reshape((-1, x_hist[0].size))
     else:
-        X = x_hist.reshape((-1, x_hist[0].numel()))
+        X = x_hist.reshape((-1, x_hist[0].size))
     X_mean = jaxm.mean(X, -2)
     X = X - X_mean[None, :]
 
@@ -51,7 +53,7 @@ def visualize_landscape(
     if verbose:
         print("Taking the SVD")
     U = jaxm.linalg.svd(X.T)[0][:, :2]  # find the first 2 dimensions
-    X_projected = (U.T @ X.T).T.detach()  # project onto the first 2 dimensions
+    X_projected = (U.T @ X.T).T  # project onto the first 2 dimensions
 
     scale = 30.0 * zoom_scale * jaxm.mean(jaxm.std(X_projected, -2))
     Xp, Yp = jaxm.meshgrid(*((jaxm.linspace(-scale / 2, scale / 2, N),) * 2))
@@ -75,7 +77,7 @@ def visualize_landscape(
     else:
         Zp = Zp - l_optimal + 1e-7
 
-    Xp, Yp, Zp = [z.detach().numpy() for z in [Xp, Yp, Zp]]
+    Xp, Yp, Zp = [j2n(z) for z in [Xp, Yp, Zp]]
 
     # plotting part #########################################
     if verbose:
@@ -110,7 +112,9 @@ def visualize_landscape(
     # ax.plot(
     #    X_projected[:, 0], X_projected[:, 1], X_projected_loss, "r", alpha=0.5
     # )
-    ax.plot_surface(Xp, Yp, Zp, cmap=plt.get_cmap("viridis"))
+    cmap = plt.get_cmap("viridis")
+    ax.plot_surface(Xp, Yp, Zp, cmap=cmap, alpha=0.8)
+    ax.contourf(Xp, Yp, Zp, 100, zdir="z", offset=np.min(Zp), cmap=cmap)
     fig.tight_layout()
 
     # plt.draw_all()

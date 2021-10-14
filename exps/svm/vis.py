@@ -43,14 +43,16 @@ if "opt" in ACTIONS and __name__ == "__main__":
     plt.figure()
     min_loss = min([np.min(data["loss"]) for data in hist.values()])
     for (k, data) in hist.items():
+        if k == "agd":
+            pdb.set_trace()
         x = data["fns"]
         t = np.cumsum(data["t"])
         # step(x, data["acc"], color=color_map[k], label=k)
         # step(t, data["acc"], color=color_map[k], label=k)
         step(
             t,
-            #data["loss"] - min_loss,
-            data["loss"],
+            data["loss"] - min_loss,
+            #data["loss"],
             color=color_map[k],
             label=label_map[k],
             lw=2,
