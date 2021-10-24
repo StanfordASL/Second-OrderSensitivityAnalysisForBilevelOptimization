@@ -372,8 +372,8 @@ if "compvis" == ACTION:
         results[solver][seed] = value
 
     LOSSFIG, ACCFIG = 3242332, 123493
-    plt.figure(LOSSFIG, figsize=(5, 4))
-    plt.figure(ACCFIG, figsize=(5, 4))
+    plt.figure(LOSSFIG, figsize=(5, 3))
+    plt.figure(ACCFIG, figsize=(5, 3))
     #colors = dict(sqp="C0", agd="C2", lbfgs="C1")
     colors = dict(sqp="black", agd="C0", lbfgs="C4")
     labels = dict(sqp="Newton's Method (Ours)", lbfgs="L-BFGS", agd="Adam")
@@ -502,7 +502,8 @@ if "visualize" == ACTION:
     plt.ylim([np.min(losses) - 0.1, np.max(losses) + 0.1])
     plt.ylabel("$\\ell_\\operatorname{test}$")
     # plt.xlabel("$\\gamma$")
-    plt.xlabel("$p$")
+    #plt.xlabel("$p$")
+    plt.xlabel("$\\operatorname{log}_{10}$ Constraint Violation Penalty")
     # plt.title("SVM Tuning")
     plt.tight_layout()
     plt.margins(0, 0)

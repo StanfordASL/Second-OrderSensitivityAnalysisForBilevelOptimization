@@ -157,8 +157,11 @@ def loss_fn_(z, *params, **kw):
 
 
 if __name__ == "__main__":
-    np.random.seed(2027)
-    jaxm.manual_seed(2027)
+    USE_CSTR = bool(int(sys.argv[1]))
+    # seed_np, seed_jax = int(sys.argv[1]), int(sys.argv[2])
+    seed_np, seed_jax = 18352, 26792
+    np.random.seed(seed_np)
+    jaxm.manual_seed(seed_jax)
 
     # invariant problem parameters
     Q_diag = jaxm.tile(jaxm.array([1.0, 1e-2, 1.0, 1e-2]), (N, 1))
@@ -168,8 +171,10 @@ if __name__ == "__main__":
     P = jaxm.cat([dt * jaxm.ones((N, 1)), jaxm.ones((N, 2))], -1)
     x0 = jaxm.randn((XDIM,))
     A = jaxm.cat([jaxm.eye(UDIM * N), -jaxm.eye(UDIM * N)], -2)
-    # b = 0.3 * jaxm.cat([jaxm.ones(UDIM * N), jaxm.ones(UDIM * N)])
-    b = 0.3 * jaxm.cat([jaxm.ones(UDIM * N), jaxm.ones(UDIM * N)])
+    if USE_CSTR:
+        b = 0.3 * jaxm.cat([jaxm.ones(UDIM * N), jaxm.ones(UDIM * N)])
+    else:
+        b = 1e7 * jaxm.cat([jaxm.ones(UDIM * N), jaxm.ones(UDIM * N)])
 
     # generate dynamics
     X, U = X_prev, U_prev
@@ -245,24 +250,25 @@ if __name__ == "__main__":
     X_ref, U_ref = vec2params(x) if method == "sqp" else x
     x_hist = x_hist if method == "sqp" else [params2vec(*z) for z in x_hist]
 
-    n_pts = 30
+    n_pts = 60
 
     # gams = np.arange(1, 5)
-    gams = [4]
+    gams = np.linspace(1, 4, 3)
     figs, axs = [], []
-    for gam in gams:
-        fn_kw["gam"] = 10.0 ** gam
-        fn_kw["penalty"] = LogPenalty()
-        X_barrier, Y_barrier = visualize_landscape(
-            lambda x: sqp_loss_fn(sqp_barrier_opt_fn(x), x),
-            x_hist,
-            n_pts,
-            log=False,
-            verbose=True,
-            zoom_scale=0.3,
-        )
-        axs.append(plt.gca())
-        figs.append(plt.gcf())
+    if USE_CSTR:
+        for gam in gams:
+            fn_kw["gam"] = 10.0 ** gam
+            fn_kw["penalty"] = LogPenalty()
+            X_barrier, Y_barrier = visualize_landscape(
+                lambda x: sqp_loss_fn(sqp_barrier_opt_fn(x), x),
+                x_hist,
+                n_pts,
+                log=False,
+                verbose=True,
+                zoom_scale=0.3,
+            )
+            axs.append(plt.gca())
+            figs.append(plt.gcf())
     X_mpc, Y_mpc = visualize_landscape(
         lambda x: sqp_loss_fn(sqp_mpc_opt_fn(x), x),
         x_hist,
@@ -276,19 +282,37 @@ if __name__ == "__main__":
 
     zlims = [ax.get_zlim() for ax in axs]
     zlim = (min([x[0] for x in zlims]), max([x[1] for x in zlims]))
-    for (i, gam) in enumerate(gams):
-        axs[i].set_zlim(zlim)
-        figs[i].savefig(
-            "figs/gam_%s%d_log_barrier_landscape.png"
-            % ("p" if gam >= 0 else "n", abs(gam)),
+    if USE_CSTR:
+        for (i, gam) in enumerate(gams):
+            axs[i].set_zlim(zlim)
+            axs[i].axes.xaxis.set_ticklabels([])
+            axs[i].axes.yaxis.set_ticklabels([])
+            axs[i].axes.zaxis.set_ticklabels([])
+            figs[i].savefig(
+                "figs/gam_%s%d_log_barrier_landscape_%d_%d.png"
+                % ("p" if gam >= 0 else "n", abs(gam), seed_np, seed_jax),
+                dpi=200,
+                bbox_inches="tight",
+                pad_inches=0,
+            )
+    axs[-1].set_zlim(zlim)
+    axs[-1].axes.xaxis.set_ticklabels([])
+    axs[-1].axes.yaxis.set_ticklabels([])
+    axs[-1].axes.zaxis.set_ticklabels([])
+    if USE_CSTR:
+        figs[-1].savefig(
+            "figs/mpc_landscape_%d_%d.png" % (seed_np, seed_jax),
             dpi=200,
             bbox_inches="tight",
             pad_inches=0,
         )
-    axs[-1].set_zlim(zlim)
-    figs[-1].savefig(
-        "figs/mpc_landscape.png", dpi=200, bbox_inches="tight", pad_inches=0
-    )
+    else:
+        figs[-1].savefig(
+            "figs/ilqr_landscape.png",
+            dpi=200,
+            bbox_inches="tight",
+            pad_inches=0,
+        )
 
     # fn_kw["penalty"] = QuadPenalty()
     # X_barrier, Y_barrier = visualize_landscape(
@@ -302,9 +326,9 @@ if __name__ == "__main__":
     # plt.savefig("figs/quad_barrier_landscape.png", dpi=200)
     # plt.title("Quad")
 
-    plt.figure()
-    plt.imshow(Y_barrier - Y_mpc)
-    plt.colorbar()
+    #plt.figure()
+    #plt.imshow(Y_barrier - Y_mpc)
+    #plt.colorbar()
 
     # l = loss_fn(
     #    barrier_opt_fn(X_ref_expert, U_ref_expert), X_ref_expert, U_ref_expert

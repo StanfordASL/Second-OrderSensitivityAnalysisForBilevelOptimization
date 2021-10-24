@@ -230,7 +230,7 @@ if __name__ == "__main__":
     #fmaps = ["diag", "conv", "vanilla"]
     #opt_lows = ["ls"]
     #solvers = ["agd", "sqp", "lbfgs"]
-    fmaps = ["centers"]
+    fmaps = ["conv"]
     opt_lows = ["ls"]
     solvers = ["agd"]
 
@@ -276,5 +276,5 @@ if __name__ == "__main__":
         pprint(config)
         param, results, hist = main(config)
         all_results[setting] = dict(results=results, hist=hist)
-    with gzip.open("data/all_results_%03d.pkl.gz" % idx_job, "wb") as fp:
-       pickle.dump(all_results, fp)
+    #with gzip.open("data/all_results_%03d.pkl.gz" % idx_job, "wb") as fp:
+    #   pickle.dump(all_results, fp)
