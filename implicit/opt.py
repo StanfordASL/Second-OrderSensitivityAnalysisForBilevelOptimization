@@ -32,7 +32,6 @@ def minimize_agd(
 ):
     assert len(args) > 0
     assert g_fn is not None
-    use_tqdm = use_tqdm and verbose
 
     args = [x2t(arg) for arg in args]
     args = [arg.clone().detach() for arg in args]
@@ -86,8 +85,10 @@ def minimize_agd(
                 torch.norm(arg_prev - arg)
                 for (arg, arg_prev) in zip(args, args_prev)
             )
-        if verbose:
-            print_fn(tp.make_values([it, imprv.detach(), l.detach(), g_norm]))
+        if verbose or use_writer:
+            line = tp.make_values([it, imprv.detach(), l.detach(), g_norm])
+            if verbose:
+                print_fn(line)
         for pgroup in opt.param_groups:
             pgroup["lr"] *= gam
         it += 1
@@ -121,7 +122,6 @@ def minimize_lbfgs(
 ):
     assert len(args) > 0
     assert g_fn is not None
-    use_tqdm = use_tqdm and verbose
 
     args = [x2t(arg) for arg in args]
     args = [arg.clone().detach() for arg in args]
@@ -178,12 +178,14 @@ def minimize_lbfgs(
                 torch.norm(arg_prev - arg).detach()
                 for (arg, arg_prev) in zip(args, args_prev)
             )
-        if verbose:
+        if verbose or use_writer:
             closure()
             g_norm = sum(
                 arg.grad.norm().detach() for arg in args if arg.grad is not None
             )
-            print_fn(tp.make_values([it, imprv.detach(), l.detach(), g_norm]))
+            line = tp.make_values([it, imprv.detach(), l.detach(), g_norm])
+            if verbose:
+                print_fn(line)
         if imprv < 1e-9:
             break
         it += 1
@@ -315,7 +317,7 @@ def minimize_sqp(
             raise RuntimeError("Hessian is NaN")
 
         if jaxm.zeros(()).device().platform == "gpu":
-             F, (reg_it_max, _) = positive_factorization_cholesky(H, reg0)
+            F, (reg_it_max, _) = positive_factorization_cholesky(H, reg0)
         else:
             F, (reg_it_max, _) = positive_factorization_lobpcg(H, reg0)
 
@@ -351,19 +353,19 @@ def minimize_sqp(
             if data["f_best"][0] < f_best[0]:
                 x_best, f_best = x, data["f_best"]
         f_hist.append(data["f_best"])
-        if verbose:
-            print_fn(
-                tp.make_values(
-                    [
-                        it,
-                        imprv,
-                        jaxm.mean(data["f_best"]),
-                        reg_it_max,
-                        bet[0],
-                        jaxm.norm(g),
-                    ]
-                )
+        if verbose or use_writer:
+            line = tp.make_values(
+                [
+                    it,
+                    imprv,
+                    jaxm.mean(data["f_best"]),
+                    reg_it_max,
+                    bet[0],
+                    jaxm.norm(g),
+                ]
             )
+            if verbose:
+                print_fn(line)
         if imprv < 1e-9:
             break
         it += 1

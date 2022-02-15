@@ -2,7 +2,7 @@ import pdb, time
 from collections import OrderedDict as odict
 from functools import partial
 
-import torch
+import torch, numpy as np
 
 from .interface import init
 
@@ -105,6 +105,7 @@ def nn_forward_gen(nn, debug=False):
             [param.detach().numel() for param in nn.state_dict().values()]
         )
     )
+    secs = np.array([float(sec) for sec in secs])
     shapes = [tuple(param.shape) for param in nn.state_dict().values()]
     counts = [len(list(mod.parameters())) for mod in list(nn.modules())[1:]]
     mod_names = [NN2NAME_MAP[type(mod)] for mod in list(nn.modules())[1:]]
