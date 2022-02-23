@@ -1,3 +1,5 @@
+slurm
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -134,6 +136,7 @@ old/
 **/data/*
 **/runs/*
 .idea
+test/fashion
 
 *.png
 

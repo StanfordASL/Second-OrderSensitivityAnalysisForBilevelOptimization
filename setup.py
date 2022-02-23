@@ -1,12 +1,24 @@
-#!/usr/bin/env python3
+import os
+from setuptools import setup
 
-from distutils.core import setup
+# borrowed from https://pythonhosted.org/an_example_pypi_project/setuptools.html
+
+
+def read(fname):
+    try:
+        return open(os.path.join(os.path.dirname(__file__), fname)).read()
+    except FileNotFoundError:
+        return ""
+
 
 setup(
     name="implicit",
-    version="0.5",
-    description="Optimization Sensitivity Analysis package",
+    version="0.2.0",
     author="Robert Dyro",
-    author_email="rdyro@stanford.edu",
+    description=(
+        "Code accompanying the paper 'Second-Order Sensitivity Analysis for Bilevel Optimization'"
+    ),
+    license="MIT",
     packages=["implicit"],
+    long_description=read("README.md"),
 )

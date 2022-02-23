@@ -3,15 +3,19 @@ import unittest, pdb, time
 import torch
 
 import header
-from implicit import implicit_hessian
+
+from implicit.interface import init
+
+jaxm = init()
+from implicit.implicit import implicit_hessian
 import objs
 
-CE = objs.CE()
-X = torch.randn((100, 3))
-Y = torch.randn((100, 5))
+OPT = objs.CE()
+X = jaxm.randn((100, 3))
+Y = jaxm.randn((100, 5))
 lam = 1e-3
-p = torch.randn((3, 6))
-W = CE.solve(X @ p, Y, lam)
+p = jaxm.randn((3, 6))
+W = OPT.solve(X @ p, Y, lam)
 
 VERBOSE = True
 
@@ -20,9 +24,9 @@ class DpzTest(unittest.TestCase):
     def test_shape_and_val(self):
         if VERBOSE:
             print()
-        k_fn = lambda W, p: CE.grad(W, X @ p, Y, lam)
-        Dzk_solve_fn = lambda W, p, rhs, T=False: CE.Dzk_solve(
-            W, X @ p, Y, lam, rhs, T=T
+        k_fn = lambda W, p: OPT.grad(W, X @ p, Y, lam)
+        Dzk_solve_fn = lambda W, p, rhs=None, T=False: OPT.Dzk_solve(
+            W, X @ p, Y, lam, rhs=rhs, T=T
         )
         optimizations = dict(Dzk_solve_fn=Dzk_solve_fn)
         Dpz, Dppz = implicit_hessian(k_fn, W, p, optimizations=optimizations)
@@ -34,8 +38,8 @@ class DpzTest(unittest.TestCase):
         self.assertEqual(Dppz2.shape, (W.shape + p.shape + p.shape))
 
         eps = 1e-5
-        err_Dpz = torch.norm(Dpz - Dpz2)
-        err_Dppz = torch.norm(Dppz - Dppz2)
+        err_Dpz = jaxm.norm(Dpz - Dpz2)
+        err_Dppz = jaxm.norm(Dppz - Dppz2)
 
         if VERBOSE:
             print("err_Dpz: %9.4e" % err_Dpz)
@@ -48,9 +52,9 @@ class DpzTest(unittest.TestCase):
         if VERBOSE:
             print()
 
-        k_fn = lambda W, p: CE.grad(W, X @ p, Y, lam)
-        jvp_vec = torch.randn(p.shape)
-        v = torch.randn(W.shape)
+        k_fn = lambda W, p: OPT.grad(W, X @ p, Y, lam)
+        jvp_vec = jaxm.randn(p.shape)
+        v = jaxm.randn(W.shape)
 
         t_ = time.time()
         optimizations = dict(Dzk_solve_fn=Dzk_solve_fn)
@@ -71,12 +75,12 @@ class DpzTest(unittest.TestCase):
         self.assertEqual(Dppz2.shape, p.shape)
 
         eps = 1e-5
-        err_Dpz = torch.norm(
-            Dpz1.reshape(p.numel()) @ jvp_vec.reshape(p.numel()) - Dpz2
+        err_Dpz = jaxm.norm(
+            Dpz1.reshape(p.size) @ jvp_vec.reshape(p.size) - Dpz2
         )
-        err_Dppz = torch.norm(
-            Dppz1.reshape((p.numel(), p.numel())) @ jvp_vec.reshape(p.numel())
-            - Dppz2.reshape(p.numel())
+        err_Dppz = jaxm.norm(
+            Dppz1.reshape((p.size, p.size)) @ jvp_vec.reshape(p.size)
+            - Dppz2.reshape(p.size)
         )
         if VERBOSE:
             print("err_Dpz: %9.4e" % err_Dpz)
@@ -85,8 +89,8 @@ class DpzTest(unittest.TestCase):
         self.assertTrue(err_Dppz < eps)
 
     def test_shape_jvp_with_Dzk_solve(self):
-        Dzk_solve_fn = lambda W, p, rhs, T=False: CE.Dzk_solve(
-            W, X @ p, Y, lam, rhs, T=T
+        Dzk_solve_fn = lambda W, p, rhs=None, T=False: OPT.Dzk_solve(
+            W, X @ p, Y, lam, rhs=rhs, T=T
         )
         self.test_shape_jvp_without_Dzk_solve(Dzk_solve_fn=Dzk_solve_fn)
 

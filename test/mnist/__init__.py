@@ -63,13 +63,13 @@ def deskew(image, image_shape=None, negated=False):
 
 dirname = os.path.abspath(os.path.dirname(__file__))
 fnames = dict(
-    trl=os.path.join(dirname, "train-labels-idx1-ubyte" + ".gz"),
-    tri=os.path.join(dirname, "train-images-idx3-ubyte" + ".gz"),
-    tsl=os.path.join(dirname, "t10k-labels-idx1-ubyte" + ".gz"),
-    tsi=os.path.join(dirname, "t10k-images-idx3-ubyte" + ".gz"),
+    trl=os.path.join(dirname, "data/train-labels-idx1-ubyte" + ".gz"),
+    tri=os.path.join(dirname, "data/train-images-idx3-ubyte" + ".gz"),
+    tsl=os.path.join(dirname, "data/t10k-labels-idx1-ubyte" + ".gz"),
+    tsi=os.path.join(dirname, "data/t10k-images-idx3-ubyte" + ".gz"),
 )
 archive_fname = os.path.join(
-    os.path.abspath(os.path.dirname(__file__)), "mnist_archive.pkl.gz"
+    os.path.abspath(os.path.dirname(__file__)), "data/mnist_archive.pkl.gz"
 )
 
 try:

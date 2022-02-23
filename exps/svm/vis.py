@@ -18,9 +18,8 @@ def step_between(x, y1, y2, **kwargs):
 
 if "loss" in ACTIONS and __name__ == "__main__":
     with gzip.open("data/losses.pkl.gz", "rb") as fp:
-        x, y, _, _ = pickle.load(fp)
+        x, y, _, _, _ = pickle.load(fp)
     # x, y = x[1:-1], np.diff(y, n=2)
-    plt.plot(10.0 ** x, y)
 
     # plt.scatter(x, y)
     # plt.xlim([1e-8, 1e-6])
@@ -33,7 +32,8 @@ if "loss" in ACTIONS and __name__ == "__main__":
     plt.show()
 
 if "opt" in ACTIONS and __name__ == "__main__":
-    with gzip.open("data/opt_hist.pkl.gz", "rb") as fp:
+    #with gzip.open("data/opt_hist.pkl.gz", "rb") as fp:
+    with gzip.open("data/logbarrier_opt_hist.pkl.gz", "rb") as fp:
         hist = pickle.load(fp)
 
     plt.rc("font", size=16)
@@ -43,6 +43,8 @@ if "opt" in ACTIONS and __name__ == "__main__":
     plt.figure()
     min_loss = min([np.min(data["loss"]) for data in hist.values()])
     for (k, data) in hist.items():
+        if k == "agd":
+            pdb.set_trace()
         x = data["fns"]
         t = np.cumsum(data["t"])
         # step(x, data["acc"], color=color_map[k], label=k)
@@ -50,6 +52,7 @@ if "opt" in ACTIONS and __name__ == "__main__":
         step(
             t,
             data["loss"] - min_loss,
+            #data["loss"],
             color=color_map[k],
             label=label_map[k],
             lw=2,

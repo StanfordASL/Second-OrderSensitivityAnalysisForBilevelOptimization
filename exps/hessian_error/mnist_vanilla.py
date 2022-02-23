@@ -10,232 +10,205 @@ from torch.utils.tensorboard import SummaryWriter
 
 import header
 
-from implicit import implicit_jacobian
-from implicit.diff import grad, JACOBIAN, HESSIAN_DIAG, torch_grad
-from implicit.opt import minimize_agd
-from implicit.nn_tools import nn_all_params, nn_structure, nn_forward
-from implicit.nn_tools import nn_forward2
+from implicit.interface import init
+
+jaxm = init(dtype=np.float32, device="cuda")
+assert jaxm.zeros(()).device().platform == "gpu"
+
+from implicit.implicit import implicit_jacobian
+from implicit.diff import JACOBIAN, HESSIAN_DIAG
+from implicit.opt import minimize_agd, minimize_lbfgs
+from implicit.nn_tools import nn_all_params, nn_forward_gen
 
 from mnist import train, test
 
+# from fashion import train, test
+
 cat = lambda *args: np.concatenate(list(args))
 
-LAM = -4.0
+CONFIG = dict(
+    n_train=3 * 10 ** 3,
+    lam=-2.5,
+    train_it=2 * 10 ** 4,
+    refine_it=4000,
+    save_its=50,
+)
 
 
-def make_nn(device):
+def make_nn():
     return torch.nn.Sequential(
-        torch.nn.Conv2d(1, 16, (6, 6), 3),
+        torch.nn.Conv2d(1, 16, (4, 4), 2),
         torch.nn.Tanh(),
         torch.nn.Conv2d(16, 16, (2, 2), 2),
         torch.nn.Tanh(),
-        torch.nn.Conv2d(16, 16, (2, 2), 1),
+        torch.nn.Conv2d(16, 16, (2, 2), 2),
         torch.nn.Tanh(),
         torch.nn.Conv2d(16, 16, (2, 2), 2),
         torch.nn.Tanh(),
         torch.nn.Flatten(),
-        torch.nn.Linear(16 * 1, 16 * 1),
+        torch.nn.Linear(16, 32),
         torch.nn.Tanh(),
-        torch.nn.Linear(16 * 1, 10),
+        torch.nn.Linear(32, 10),
         torch.nn.Softmax(dim=-1),
-    ).to(device)
+    )
+    # return torch.nn.Sequential(
+    #    torch.nn.Conv2d(1, 16, (6, 6), 3),
+    #    torch.nn.Tanh(),
+    #    torch.nn.Conv2d(16, 16, (2, 2), 2),
+    #    torch.nn.Tanh(),
+    #    torch.nn.Conv2d(16, 16, (2, 2), 1),
+    #    torch.nn.Tanh(),
+    #    torch.nn.Conv2d(16, 16, (2, 2), 2),
+    #    torch.nn.Tanh(),
+    #    torch.nn.Flatten(),
+    #    torch.nn.Linear(16 * 1, 16 * 1),
+    #    torch.nn.Tanh(),
+    #    torch.nn.Linear(16 * 1, 10),
+    #    torch.nn.Softmax(dim=-1),
+    # )
 
 
 def loss_fn_gen(fwd_fn):
-    l = torch.nn.MSELoss()
-
     def loss_fn(z, lam, X, Y):
-        return l(fwd_fn(X, z), Y) + (10.0 ** lam.reshape(())) * (z ** 2).sum()
+        l = jaxm.mean(jaxm.sum((fwd_fn(X, z) - Y) ** 2, -1))
+        l = l + (10.0 ** lam) * jaxm.sum(z ** 2)
+        return l
 
     return loss_fn
 
 
-def main(mode):
-    device = torch.device("cuda")
-    nn = make_nn(device)
-    Xtr, Xts = [
-        torch.tensor(z, dtype=torch.float32, device=device).reshape(
-            (-1, 1, 28, 28)
-        )
-        for z in [train["images"], test["images"]]
-    ]
-    Ytr, Yts = [
-        torch.nn.functional.one_hot(
-            torch.tensor(z, device=device, dtype=torch.long)
-        ).to(Xtr.dtype)
-        for z in [train["labels"], test["labels"]]
-    ]
+def main(mode, config):
+    STATE, dtype = dict(), jaxm.zeros(()).dtype
 
-    params = nn_all_params(nn)
-    # nn_struct = nn_structure(nn)
-    # Yp = nn_forward2(nn_struct, Xtr, params)
-    fwd_fn = lambda X, params: nn_forward(nn, X, params)
+    # read in the data na make the NN ######################################
+    nn = make_nn()
+    Xts = jaxm.array(test["images"]).reshape((-1, 1, 28, 28)).astype(dtype)
+    Yts = jaxm.nn.one_hot(jaxm.array(test["labels"]), 10).astype(dtype)
 
+    # generate the train functions #########################################
+    fwd_fn = nn_forward_gen(nn)
     loss_fn = loss_fn_gen(fwd_fn)
 
+    @jaxm.jit
     def acc_fn(params, X, Y):
-        return torch.mean(
-            (torch.argmax(fwd_fn(X, params), -1) == torch.argmax(Y, -1)).to(
-                torch.float32
-            )
+        return jaxm.mean(
+            jaxm.argmax(fwd_fn(X, params), -1) == jaxm.argmax(Y, -1)
         )
 
+    f_fn_ = jaxm.jit(loss_fn)
+    g_fn_ = jaxm.jit(jaxm.grad(f_fn_))
+
+    def f_fn(z):
+        nonlocal STATE
+        X, Y = STATE["X"], STATE["Y"]
+        return f_fn_(z, config["lam"], X, Y)
+
+    def g_fn(z):
+        nonlocal STATE
+        X, Y = STATE["X"], STATE["Y"]
+        ret = g_fn_(z, config["lam"], X, Y)
+        return ret
+
+    # define callback logic ################################################
+    STATE["param_hist"], STATE["it"] = odict(), 0
+    train_it = jaxm.round(
+        jaxm.linspace(0, config["train_it"] + 1, config["save_its"] // 2)
+    )[1:]
+    refine_it = jaxm.round(
+        jaxm.linspace(0, config["refine_it"] + 1, config["save_its"] // 2)
+    )[1:]
+    STATE["save_its"] = jaxm.cat([train_it, train_it[-1] + refine_it])
+    STATE["train_phase"] = True
+
+    def callback_fn(z, opt=None):
+        nonlocal STATE
+        it = STATE["it"]
+        STATE["train_phase"] = it < config["train_it"]
+        if (it + 1) % 100 == 0:
+            tqdm.write("Acc %6.2f%%" % (1e2 * acc_fn(z, Xts, Yts)))
+
+        if it in STATE["save_its"]:
+            STATE["param_hist"][it] = np.array(z)
+
+        Xtr, Ytr = STATE["Xtr"], STATE["Ytr"]
+        if STATE["train_phase"]:
+            ridx = jaxm.randint(0, Xtr.shape[0], (config["n_train"],))
+            STATE["X"], STATE["Y"] = Xtr[ridx, ...], Ytr[ridx, ...]
+        else:
+            STATE["X"], STATE["Y"] = Xtr, Ytr
+            opt.param_groups[0]["lr"] = 1e-4
+
+        STATE["it"] += 1
+
     fname = "data/results.pkl.gz"
-    first_phase_it = 2 * 10 ** 5
+    opts = dict(
+        verbose=True,
+        callback_fn=callback_fn,
+        ai=1e-4,
+        af=1e-4,
+        max_it=config["train_it"] + config["refine_it"],
+        use_writer=True,
+    )
     if mode == "train":
-        params0 = nn_all_params(nn).clone()
-        lam = LAM
-        params = torch.nn.Parameter(params0.clone())
-        opt = torch.optim.Adam([params], lr=1e-4)
-        results = dict(iters=odict(), X=None, Y=None)
-        first_phase = True
+        Xtr = jaxm.array(train["images"]).reshape((-1, 1, 28, 28)).astype(dtype)
+        Ytr = jaxm.nn.one_hot(jaxm.array(train["labels"]), 10).astype(dtype)
+        STATE["Xtr"], STATE["Ytr"] = Xtr, Ytr
+        params0 = nn_all_params(nn)
+        print("params.shape =", params0.shape)
+        paramss = minimize_agd(f_fn, g_fn, params0, **opts)
 
-        def step_fn(X, Y):
-            l = loss_fn(params, torch.tensor(lam, device=device), X, Y)
-            opt.zero_grad()
-            l.backward()
-            return l
-
-        writer = SummaryWriter()
-
-        n_train = 10 ** 3
-        for it in tqdm(range(first_phase_it + 10 ** 4)):
-            if it == first_phase_it:
-                first_phase, n_train = False, 10 ** 5
-                r = torch.randint(Xtr.shape[0], size=(n_train,))
-                X, Y = Xtr[r, ...], Ytr[r, ...]
-                results["X"] = X.cpu().clone().numpy()
-                results["Y"] = Y.cpu().clone().numpy()
-                opt.param_groups[0]["lr"] = 1e-5
-            if not first_phase or it % (10 ** 2) == 0:
-                acc = 1e2 * acc_fn(params, Xts, Yts)
-            if (first_phase and it % 1000 == 0) or (
-                not first_phase and it % 50
-            ):
-                results["iters"][it] = params.detach().clone().cpu().numpy()
-            if first_phase:
-                r = torch.randint(Xtr.shape[0], size=(n_train,))
-                X, Y = Xtr[r, ...], Ytr[r, ...]
-            old_params = params.detach().clone()
-            l = opt.step(lambda: step_fn(X, Y))
-            g = params.grad.detach().norm()
-            imprv = (params.detach() - old_params).norm()
-            tqdm.write(
-                "%05d %9.4e %9.4e %9.4e %3.1f%%"
-                % (it, float(l), float(g), float(imprv), float(acc))
-            )
-            writer.add_scalar("loss", float(l), it)
-            writer.add_scalar("grad", float(g), it)
-            writer.add_scalar("imprv", float(imprv), it)
-            writer.add_scalar("acc", float(acc), it)
         with gzip.open(fname, "wb") as fp:
-            pickle.dump(results, fp)
-    elif mode == "eval":
-        with gzip.open(fname, "rb") as fp:
-            results = pickle.load(fp)
-        r = torch.randint(Xtr.shape[0], size=(10 ** 4,))
-        X, Y = Xtr[r, :], Ytr[r, :].to(Xtr.dtype)
-
-        pdb.set_trace()
-
-        def k_fn(z, lam):
-            ret = JACOBIAN(
-                lambda z: loss_fn(z, lam, X, Y),
-                z,
-                create_graph=True,
+            pickle.dump(
+                dict(
+                    param_hist=STATE["param_hist"],
+                    config=config,
+                    X=np.array(Xtr),
+                    Y=np.array(Ytr),
+                ),
+                fp,
             )
-            return ret
-
-        lam = torch.tensor([LAM], device=device)
-        its = list(results["iters"].keys())
-
-        z = torch.tensor(results["iters"][its[-1]]).to(device)
-        print("Acc: %3.1f" % (1e2 * acc_fn(z, Xts, Yts)))
-
-        t = time.time()
-        z, lam = z.requires_grad_(), lam.requires_grad_()
-        g, J = k_fn(z, lam), []
-        for i in tqdm(range(z.numel())):
-            J.append(grad(g.reshape(-1)[i], z, retain_graph=True))
-        print("Elapsed %9.4e" % (time.time() - t))
-
-        t = time.time()
-        J = JACOBIAN(lambda z: k_fn(z, lam), z)
-        print("Elapsed %9.4e" % (time.time() - t))
-
-        pdb.set_trace()
-
-        Dpz = implicit_jacobian(k_fn, z, lam)
-
-        # pdb.set_trace()
-    elif mode == "eval_slurm":
+    elif mode == "eval":
         assert len(sys.argv) >= 3
         CONFIG = dict(idx=int(sys.argv[2]))
 
         with gzip.open(fname, "rb") as fp:
             results = pickle.load(fp)
-        X = torch.as_tensor(results["X"], device=device)
-        Y = torch.as_tensor(results["Y"], device=device)
-        r = torch.randint(X.shape[0], size=(10 ** 4,))
-        X, Y = X[r, ...], Y[r, ...]
+        X, Y = jaxm.array(results["X"]), jaxm.array(results["Y"])
+        # ridx = jaxm.randint(0, X.shape[0], size=(100,))
+        # X, Y = X[ridx, ...], Y[ridx, ...]
 
-
-        def k_fn(z, lam):
-            ret = JACOBIAN(
-                lambda z: loss_fn(z, lam, X, Y),
-                z,
-                create_graph=True,
-            )
-            return ret
+        lam = jaxm.array(config["lam"])
 
         fname = "data/Dpz_%03d_2.pkl.gz"
-        lam = torch.tensor([LAM], device=device)
         idx, results_dpz = 0, odict()
-        its = np.array(list(results["iters"].keys()))
-
-        its1 = its[its <= first_phase_it]
-        its2 = its[its > first_phase_it]
-
-        its = cat(
-            its1[np.round(np.linspace(0, len(its1) - 1, 25)).astype(int)],
-            its2[np.round(np.linspace(0, len(its2) - 1, 25)).astype(int)],
-        )
-
+        its = np.array(list(results["param_hist"].keys()))
+        print(len(its))
         for (idx, it) in enumerate(its):
             if idx == CONFIG["idx"]:
                 results_dpz[it] = dict()
-                z = torch.tensor(results["iters"][it]).to(device)
-                print("Acc: %3.1f" % (1e2 * acc_fn(z, Xts, Yts)))
-                print("||g|| = %9.4e" % k_fn(z, lam).norm().cpu())
+                z = jaxm.array(results["param_hist"][it])
+                print("Acc: %5.2f%%" % (1e2 * acc_fn(z, Xts, Yts)))
+                print("||g|| = %9.4e" % jaxm.norm(g_fn_(z, lam, X, Y)))
 
-                t = time.time()
-                # Dzk = JACOBIAN(lambda z: k_fn(z, lam), z)
-                # Dzk = torch_grad(lambda z: k_fn(z, lam), verbose=True)(z)
-
-                lam_= jnp.array(lam.numpy().detach().cpu())
-                X_ = jnp.array(X.numpy().detach().cpu())
-                Y_ = jnp.array(Y.numpy().detach().cpu())
-
-                lens = [
-                    sum(p.numel() for p in m.parameters())
-                    for m in list(nn.modules())[1:]
-                ]
-                lens = [l for l in lens if l != 0]
-                zs = torch.split(z, lens)
-                # Dzk = JACOBIAN(lambda *zs: k_fn(torch.cat(zs), lam), zs)
-                # Dzk = torch_grad(lambda *zs: k_fn(torch.cat(zs), lam), verbose=True)(*zs)
-                Dzk = HESSIAN_DIAG(
-                    lambda *zs: loss_fn(torch.cat(zs), lam, X, Y), zs
+                hi_fn = jaxm.grad(
+                    lambda z, lam, i: g_fn_(z, lam, X, Y).reshape(-1)[i]
                 )
-                print("Elapsed %9.4e s" % (time.time() - t))
-                pdb.set_trace()
+                hi_fn = jaxm.jit(hi_fn)
+                H = []
+                for i in tqdm(range(z.size)):
+                    H.append(hi_fn(z, lam, i))
+                Dzk = jaxm.stack(H, -1)
 
-                results_dpz[it]["Dzk"] = Dzk.cpu().detach().numpy()
+                results_dpz[it]["Dzk"] = np.array(Dzk)
                 optimizations = dict(Dzk=Dzk)
                 Dpz = implicit_jacobian(
-                    k_fn, z, lam, optimizations=optimizations
+                    lambda z, lam: g_fn_(z, lam, X, Y),
+                    z,
+                    lam,
+                    optimizations=optimizations,
                 )
-                results_dpz[it]["Dpz"] = Dpz.cpu().detach().numpy()
+                results_dpz[it]["Dpz"] = np.array(Dpz)
+                results_dpz[it]["Dzl"] = np.array(g_fn_(z, lam, X, Y))
                 with gzip.open(fname % idx, "wb") as fp:
                     pickle.dump(results_dpz, fp)
     else:
@@ -243,4 +216,4 @@ def main(mode):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) >= 2 else "train")
+    main(sys.argv[1] if len(sys.argv) >= 2 else "train", CONFIG)

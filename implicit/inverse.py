@@ -5,8 +5,6 @@ import torch
 import numpy as np
 import scipy.sparse.linalg as spla
 
-from .cg_batch import cg_batch
-
 
 def asLinearOperator(fn, n, device=None, dtype=None):
     return spla.LinearOperator(
@@ -57,10 +55,3 @@ def solve_spla(
 
 solve_cg = partial(solve_spla, spla.cg)
 solve_gmres = partial(solve_spla, spla.gmres)
-
-
-def solve_cg_torch(A_fn, rhs, x0=None, M_fn=None, tol=1e-5, max_it=None):
-    x, info = cg_batch(
-        A_fn, rhs, M_bmm=M_fn, X0=x0, rtol=tol, maxiter=max_it, verbose=True
-    )
-    return x
