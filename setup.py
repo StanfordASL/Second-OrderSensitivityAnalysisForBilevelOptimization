@@ -13,9 +13,11 @@ def read(fname):
 
 setup(
     name="implicit",
-    version="0.1.0",
+    version="0.2.0",
     author="Robert Dyro",
-    description=("Simplified and user friendly interface to JAX."),
+    description=(
+        "Code accompanying the paper 'Second-Order Sensitivity Analysis for Bilevel Optimization'"
+    ),
     license="MIT",
     packages=["implicit"],
     long_description=read("README.md"),

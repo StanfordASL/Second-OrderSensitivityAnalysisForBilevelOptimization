@@ -18,7 +18,7 @@ def step_between(x, y1, y2, **kwargs):
 
 if "loss" in ACTIONS and __name__ == "__main__":
     with gzip.open("data/losses.pkl.gz", "rb") as fp:
-        x, y, _, _ = pickle.load(fp)
+        x, y, _, _, _ = pickle.load(fp)
     # x, y = x[1:-1], np.diff(y, n=2)
 
     # plt.scatter(x, y)

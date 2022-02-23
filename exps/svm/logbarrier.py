@@ -130,7 +130,7 @@ SOLVER = sys.argv[2] if len(sys.argv) >= 3 else None
 SEED_IDX = int(sys.argv[3]) if len(sys.argv) >= 3 else None
 
 # prepare data #################################################3
-if __name__ == "__main__":
+if False and __name__ == "__main__":
     global OPT, Zts, Yts
     dtype = jaxm.zeros(()).dtype
 
@@ -511,6 +511,55 @@ if "visualize" == ACTION:
     plt.gca().spines["right"].set_color("none")
     plt.legend()
     plt.savefig("figs/svm_loss.png", dpi=300, bbox_inches="tight", pad_inches=0)
+
+    # plt.figure()
+    # plt.plot(gams, accs)
+    # plt.xlabel("$\\gamma$")
+    # plt.ylabel("Test Accuracy")
+
+    plt.show()
+
+# visualize loss landscape ########################################
+if "icon" == ACTION:
+    with gzip.open(LOSSES_FNAME, "rb") as fp:
+        gams, losses, gs, hs, accs = pickle.load(fp)
+    gams = gams[: len(losses)]
+
+    #plt.figure(figsize=(5, 3))
+    plt.figure(figsize=(4, 3))
+    plt.plot(gams, losses, color="C0", label="")
+    grads = np.diff(losses) / np.diff(gams)
+    for (i, (gam, loss, g, h)) in enumerate(zip(gams, losses, gs, hs)):
+        dgam = 1.5e-1
+        grad = np.interp(gam, gams[:-1], grads)
+        # plt.plot([gam, gam + dgam], [loss, loss + g * dgam], color="C1")
+
+        if i == np.argmin(losses) - 10:
+            # plot the local quadratic approximation ###############
+            xp = np.linspace(gams[0], gams[-1], 100)
+            fp = loss + g * (xp - gam) + 0.5 * h * (xp - gam) ** 2
+            plt.plot(xp, fp, color="black", label="ours")
+
+            fp = loss + g * (xp - gam)
+            plt.plot(xp, fp, color="red", label="IFT")
+
+            # plt.plot([gam, gam], [np.max(losses), np.min(losses)], color="C2")
+            plt.scatter(gam, loss, color="black", label="")
+
+        print(grad / (g / h))
+
+    plt.ylim([np.min(losses) - 0.1, np.max(losses) + 0.1])
+    #plt.ylabel("$\\ell_\\operatorname{test}$")
+    # plt.xlabel("$\\gamma$")
+    #plt.xlabel("$p$")
+    #plt.xlabel("$\\operatorname{log}_{10}$ Constraint Violation Penalty")
+    # plt.title("SVM Tuning")
+    plt.tight_layout()
+    plt.margins(0, 0)
+    plt.gca().spines["top"].set_color("none")
+    plt.gca().spines["right"].set_color("none")
+    #plt.legend()
+    plt.savefig("figs/icon.png", dpi=300, bbox_inches="tight", pad_inches=0)
 
     # plt.figure()
     # plt.plot(gams, accs)
