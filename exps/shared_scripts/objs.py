@@ -296,7 +296,6 @@ class OPT_conv:
         Za = conv(Za, C, C0, stride=(self.stride, self.stride))
         Za = Za.reshape((-1, Za[0, ...].size))
         ret = jaxm.cat([Za[..., 0:1] ** 0, jaxm.tanh(Za)], -1)
-        pdb.set_trace()
         return ret
 
     def pred(self, W, Z, param):

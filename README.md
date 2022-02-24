@@ -42,8 +42,9 @@ BibTeX
   - `exps/svm` – Support Vector Machine hyperparameter tuning 
   - `exps/optimal_control` – inverse optimal control with constraints
   - `exps/auto_tuning` – model auto-tuning experiments
+  - `exps/shared_scripts` – contains various general-purpose experimental
+    scripts shared by the experiments
 
-  Some experiments were not included in the paper.
 * `implicit` contains the main computational package
   - `implicit/interface.py` – interface bindings to make `jax` behave like
     `torch`
@@ -56,7 +57,5 @@ BibTeX
   - `implicit/pca.py` – principal component analysis visualization routines
   - `implicit/inverse.py` – specialized matrix-free inverse methods
   - `implicit/utils.py` – utility functions
-* `test` contains various general-purpose experimental scripts shared by the
-  experiments
 * `unit_tests` contains some sanity checks and unit tests to verify the package
   is working as expected
